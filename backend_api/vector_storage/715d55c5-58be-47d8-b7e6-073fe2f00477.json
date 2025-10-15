@@ -1,0 +1,12 @@
+{
+  "documents": [
+    "Flight Data Summary:\nVehicle Type: test_vehicle\nFlight Modes Used: AUTO, MANUAL, RTL\nTotal Mode Changes: 6\nGPS Trajectory Points: 6\nAltitude Range: 50.0 meters to 110.0 meters\nTotal Events: 6"
+  ],
+  "embeddings": [],
+  "metadata": [
+    {
+      "added_at": "2025-10-14T18:36:08.731002",
+      "document_id": "5fde91a2-0689-452d-a444-0e089e825ff5"
+    }
+  ]
+}

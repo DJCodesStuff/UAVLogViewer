@@ -12,8 +12,11 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
-from in_memory_rag import BM25RAG
+from rag_manager import ConsolidatedRAGManager, get_global_rag_manager
 from prompts import get_prompt, ARDUPILOT_DATA_ANALYST_PROMPT
+from text_utils import clean_llm_response, sanitize_text
+from conversation_state import get_global_conversation_manager, ConversationIntent, ConversationState
+from telemetry_retriever import get_global_telemetry_retriever, TelemetryQuery
 
 # Load environment variables
 load_dotenv()
@@ -27,11 +30,11 @@ class AgentState(TypedDict):
     tool_result: Optional[str]
 
 class SessionBasedRAG:
-    """Session-based RAG implementation"""
+    """Session-based RAG implementation using the consolidated system"""
     
     def __init__(self, session_id: str):
         self.session_id = session_id
-        self.rag_engine = BM25RAG()
+        self.rag_manager = get_global_rag_manager()
         self.session_documents = []
         self.document_count = 0
     
@@ -40,33 +43,47 @@ class SessionBasedRAG:
         if isinstance(texts, str):
             texts = [texts]
         
+        # Use the consolidated RAG manager
+        result = self.rag_manager.add_documents(
+            session_id=self.session_id,
+            documents=texts
+        )
+        
+        # Update local tracking
         self.session_documents.extend(texts)
-        self.rag_engine.add_documents(texts)
         self.document_count += len(texts)
         
-        return f"Added {len(texts)} document(s) to session {self.session_id}. Total documents: {self.document_count}"
+        return result
     
     def retrieve(self, query: str, top_k: int = 3) -> List[str]:
         """Retrieve relevant documents from the session-based RAG engine"""
-        return self.rag_engine.retrieve(query, top_k=top_k)
+        results = self.rag_manager.search_documents(
+            session_id=self.session_id,
+            query=query,
+            top_k=top_k
+        )
+        
+        # Extract document text from results
+        return [result["document"] for result in results]
     
     def clear_documents(self) -> str:
         """Clear all documents from the session-based RAG engine"""
-        self.rag_engine.documents = []
-        self.rag_engine.tokenized_docs = []
-        self.rag_engine.bm25 = None
+        result = self.rag_manager.clear_collection(self.session_id)
         self.session_documents = []
         self.document_count = 0
-        return f"RAG documents cleared for session {self.session_id}."
+        return result
     
     def get_status(self) -> Dict[str, Any]:
         """Get the current status of the session-based RAG engine"""
+        status = self.rag_manager.get_collection_status(self.session_id)
         return {
             "session_id": self.session_id,
-            "document_count": self.document_count,
+            "document_count": status.get("document_count", 0),
             "session_documents": len(self.session_documents),
-            "has_documents": self.document_count > 0,
-            "engine_ready": self.rag_engine.bm25 is not None
+            "has_documents": status.get("has_documents", False),
+            "engine_ready": status.get("has_documents", False),
+            "collection_id": status.get("collection_id"),
+            "status": status.get("status", "unknown")
         }
 
 class LangGraphReactAgent:
@@ -104,7 +121,13 @@ class LangGraphReactAgent:
             self._create_rag_search_tool(),
             self._create_rag_add_documents_tool(),
             self._create_rag_clear_tool(),
-            self._create_rag_status_tool()
+            self._create_rag_status_tool(),
+            self._create_ardupilot_docs_tool(),
+            self._create_web_search_tool(),
+            self._create_telemetry_tool(),
+            self._create_telemetry_summary_tool(),
+            self._create_anomaly_analysis_tool(),
+            self._create_structured_data_tool()
         ]
         
         # Create the agent graph
@@ -161,6 +184,276 @@ class LangGraphReactAgent:
             return f"RAG Status: {status}"
         
         return get_rag_status
+
+    def _create_ardupilot_docs_tool(self):
+        """Create ArduPilot documentation search tool"""
+        @tool
+        def search_ardupilot_documentation(query: str) -> str:
+            """Search ArduPilot documentation for parameter information. Use this when you need detailed information about ArduPilot log message parameters, their meanings, units, and usage."""
+            try:
+                from ardupilot_docs import get_global_docs_retriever
+                docs_retriever = get_global_docs_retriever()
+                
+                # Search for parameters matching the query
+                results = docs_retriever.search_parameters(query)
+                
+                if not results:
+                    return f"No ArduPilot parameters found matching '{query}'. Try searching for common parameters like GPS, BAT, ATT, MODE, ERR, RCIN, RSSI."
+                
+                response = f"ArduPilot Documentation Search Results for '{query}':\n\n"
+                
+                for result in results[:5]:  # Show top 5 results
+                    response += f"Parameter: {result['parameter']}\n"
+                    response += f"Description: {result['description']}\n"
+                    response += f"Fields: {', '.join(result['fields']) if result['fields'] else 'No field details'}\n"
+                    response += f"Documentation: https://ardupilot.org/plane/docs/logmessages.html#{result['parameter'].lower()}\n\n"
+                
+                response += "For more detailed information, visit: https://ardupilot.org/plane/docs/logmessages.html"
+                
+                return response
+                
+            except Exception as e:
+                return f"Error searching ArduPilot documentation: {str(e)}"
+        
+        return search_ardupilot_documentation
+
+    def _create_web_search_tool(self):
+        """Create web search tool"""
+        @tool
+        def web_search(query: str) -> str:
+            """Search the web for current information about a topic. Use this when you need up-to-date information that might not be in your training data."""
+            try:
+                import requests
+                from bs4 import BeautifulSoup
+                
+                # Use DuckDuckGo for search (no API key required)
+                search_url = f"https://html.duckduckgo.com/html/?q={query}"
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                
+                response = requests.get(search_url, headers=headers, timeout=10)
+                response.raise_for_status()
+                
+                soup = BeautifulSoup(response.content, 'html.parser')
+                results = soup.find_all('div', class_='result')
+                
+                search_results = []
+                for result in results[:3]:  # Limit to top 3 results
+                    title_elem = result.find('a', class_='result__a')
+                    snippet_elem = result.find('div', class_='result__snippet')
+                    
+                    if title_elem and snippet_elem:
+                        title = title_elem.get_text().strip()
+                        snippet = snippet_elem.get_text().strip()
+                        search_results.append(f"Title: {title}\nSnippet: {snippet}")
+                
+                if search_results:
+                    return "Search Results:\n" + "\n\n".join(search_results)
+                else:
+                    return "No search results found for the query."
+                    
+            except Exception as e:
+                return f"Error performing web search: {str(e)}"
+        
+        return web_search
+
+    def _create_telemetry_tool(self):
+        """Create telemetry data retrieval tool"""
+        @tool
+        def get_telemetry_data(parameter: str, time_range: Optional[str] = None, aggregation: str = "raw") -> str:
+            """Retrieve telemetry data for a specific parameter. Use this when the user asks about specific flight data parameters like GPS, ATT, BAT, etc."""
+            try:
+                telemetry_retriever = get_global_telemetry_retriever()
+                
+                # Map common parameter names to our internal names
+                parameter_mapping = {
+                    'BAT.Voltage': 'battery_voltage',
+                    'BAT.Volt': 'battery_voltage',
+                    'BAT.Temperature': 'temperature',
+                    'BAT.Temp': 'temperature',
+                    'GPS.NSats': 'satellites',
+                    'GPS.Satellites': 'satellites',
+                    'GPS.HDop': 'hdop',
+                    'GPS.VDop': 'vdop',
+                    'GPS.HAcc': 'hacc',
+                    'GPS.VAcc': 'vacc',
+                    'GPS.Status': 'gps_status',
+                    'GPS.Fix': 'gps_status',
+                    'RC.RSSI': 'rc_signal_strength',
+                    'RC.Signal': 'rc_signal_strength',
+                    'RC.Loss': 'rc_signal_lost',
+                    'ALT': 'altitude',
+                    'GPS.Alt': 'altitude',
+                    'FLIGHT_TIME': 'flight_duration',
+                    'DURATION': 'flight_duration'
+                }
+                
+                # Use mapped parameter if available, otherwise use original
+                mapped_parameter = parameter_mapping.get(parameter, parameter)
+                
+                # Parse time range if provided
+                time_range_tuple = None
+                if time_range:
+                    try:
+                        start, end = time_range.split(',')
+                        time_range_tuple = (float(start), float(end))
+                    except:
+                        pass
+                
+                query = TelemetryQuery(
+                    parameter=mapped_parameter,
+                    time_range=time_range_tuple,
+                    aggregation=aggregation
+                )
+                
+                result = telemetry_retriever.query_telemetry(self.session_id, query)
+                
+                if "error" in result:
+                    return f"Error retrieving telemetry data: {result['error']}. {result.get('suggestion', '')}"
+                
+                # Format the response with comprehensive documentation
+                response = f"Telemetry data for {parameter}:\n"
+                response += f"Description: {result['documentation']['description']}\n"
+                response += f"Units: {result['documentation']['units']}\n"
+                response += f"Category: {result['documentation']['category']}\n"
+                response += f"Data points: {result['data_points']}\n"
+                
+                # Add field-specific documentation
+                if 'field_documentation' in result and result['field_documentation']:
+                    response += f"\nField Details:\n"
+                    for field, doc in result['field_documentation'].items():
+                        response += f"- {field}: {doc.get('description', 'No description')} ({doc.get('units', 'unknown units')})\n"
+                
+                # Add ArduPilot reference
+                if 'ardupilot_reference' in result:
+                    response += f"\nArduPilot Documentation: {result['ardupilot_reference']}\n"
+                
+                if result['data']:
+                    if isinstance(result['data'], list) and len(result['data']) > 0:
+                        # Show first few data points
+                        sample_data = result['data'][:3]
+                        response += f"Sample data: {sample_data}\n"
+                    else:
+                        response += f"Data: {result['data']}\n"
+                
+                return response
+                
+            except Exception as e:
+                return f"Error retrieving telemetry data: {str(e)}"
+        
+        return get_telemetry_data
+
+    def _create_telemetry_summary_tool(self):
+        """Create telemetry summary tool"""
+        @tool
+        def get_telemetry_summary() -> str:
+            """Get a summary of available telemetry data for the current session. Use this to understand what data is available for analysis."""
+            try:
+                telemetry_retriever = get_global_telemetry_retriever()
+                summary = telemetry_retriever.get_telemetry_summary(self.session_id)
+                
+                if "error" in summary:
+                    return f"Error getting telemetry summary: {summary['error']}"
+                
+                response = f"Available telemetry data for session {self.session_id}:\n"
+                response += f"Available parameters: {', '.join(summary['available_parameters'])}\n"
+                
+                for source in summary['data_sources']:
+                    response += f"- {source['type']}: {source['count']} items ({source['description']})\n"
+                
+                return response
+                
+            except Exception as e:
+                return f"Error getting telemetry summary: {str(e)}"
+        
+        return get_telemetry_summary
+
+    def _create_anomaly_analysis_tool(self):
+        """Create anomaly analysis tool"""
+        @tool
+        def analyze_flight_anomalies(user_question: str = "") -> str:
+            """Analyze flight data for anomalies and potential issues. Use this when the user asks about anomalies, problems, or issues in the flight data."""
+            try:
+                telemetry_retriever = get_global_telemetry_retriever()
+                analysis_result = telemetry_retriever.analyze_flight_anomalies(self.session_id, user_question)
+                
+                if "error" in analysis_result:
+                    return f"Error analyzing flight anomalies: {analysis_result['error']}"
+                
+                # Format the response
+                response = f"Flight Anomaly Analysis for session {self.session_id}:\n"
+                response += f"Flight Duration: {analysis_result['telemetry_summary']['flight_duration']:.1f} seconds\n"
+                response += f"Data Points: {analysis_result['telemetry_summary']['total_data_points']:,}\n"
+                response += f"Parameters Analyzed: {len(analysis_result['telemetry_summary']['parameters_analyzed'])}\n"
+                response += f"Anomaly Indicators: {analysis_result['telemetry_summary']['anomaly_indicators_count']}\n"
+                response += f"Flight Phases: {analysis_result['telemetry_summary']['flight_phases_count']}\n\n"
+                
+                if analysis_result['anomaly_indicators']:
+                    response += "ANOMALY INDICATORS DETECTED:\n"
+                    for indicator in analysis_result['anomaly_indicators'][:5]:  # Show top 5
+                        response += f"- {indicator['type'].upper()}: {indicator['description']}\n"
+                        response += f"  Severity: {indicator['severity']}, Time: {indicator['timestamp']}\n"
+                else:
+                    response += "No significant anomaly indicators detected.\n"
+                
+                if analysis_result['flight_phases']:
+                    response += "\nFLIGHT PHASES:\n"
+                    for phase in analysis_result['flight_phases']:
+                        response += f"- {phase['phase'].upper()}: {phase['description']}\n"
+                
+                return response
+                
+            except Exception as e:
+                return f"Error analyzing flight anomalies: {str(e)}"
+        
+        return analyze_flight_anomalies
+
+    def _create_structured_data_tool(self):
+        """Create structured telemetry data tool"""
+        @tool
+        def get_structured_flight_data() -> str:
+            """Get structured flight data summary for comprehensive analysis. Use this when you need detailed flight data for analysis."""
+            try:
+                telemetry_retriever = get_global_telemetry_retriever()
+                structured_data = telemetry_retriever.get_structured_telemetry_data(self.session_id)
+                
+                if "error" in structured_data:
+                    return f"Error getting structured data: {structured_data['error']}"
+                
+                # Format the response
+                response = f"Structured Flight Data for session {self.session_id}:\n\n"
+                
+                # Flight overview
+                overview = structured_data['flight_overview']
+                response += f"FLIGHT OVERVIEW:\n"
+                response += f"- Duration: {overview['duration_seconds']:.1f} seconds\n"
+                response += f"- Data Points: {overview['total_data_points']:,}\n"
+                response += f"- Parameters: {len(overview['parameters_available'])}\n\n"
+                
+                # Key parameters
+                if structured_data['key_parameters']:
+                    response += "KEY PARAMETERS:\n"
+                    for param, stats in structured_data['key_parameters'].items():
+                        response += f"- {param.upper()}:\n"
+                        response += f"  Range: {stats['min']:.2f} to {stats['max']:.2f}\n"
+                        response += f"  Mean: {stats['mean']:.2f} ± {stats['std_dev']:.2f}\n"
+                        response += f"  Trend: {stats['trend']}\n"
+                        response += f"  Data Points: {stats['data_points']}\n"
+                
+                # Anomaly summary
+                anomaly_summary = structured_data['anomaly_summary']
+                response += f"\nANOMALY SUMMARY:\n"
+                response += f"- Total Indicators: {anomaly_summary['total_indicators']}\n"
+                response += f"- High Severity: {anomaly_summary['high_severity']}\n"
+                response += f"- Critical Severity: {anomaly_summary['critical_severity']}\n"
+                
+                return response
+                
+            except Exception as e:
+                return f"Error getting structured flight data: {str(e)}"
+        
+        return get_structured_flight_data
     
     def _create_agent_graph(self) -> StateGraph:
         """Create the LangGraph agent with React pattern"""
@@ -239,14 +532,24 @@ class LangGraphReactAgent:
         return self.rag.retrieve(query, top_k)
     
     def generate(self, prompt: str, **kwargs) -> str:
-        """Generate response using the LangGraph React agent"""
+        """Generate response using the LangGraph React agent with agentic conversation management"""
         try:
             if not prompt or not isinstance(prompt, str):
                 raise ValueError("Prompt must be a non-empty string.")
             
+            # Sanitize input prompt
+            sanitized_prompt = sanitize_text(prompt)
+            
+            # Get conversation manager and update state
+            conversation_manager = get_global_conversation_manager()
+            telemetry_retriever = get_global_telemetry_retriever()
+            
+            # Check if flight data is available
+            flight_data_available = telemetry_retriever.get_flight_data(self.session_id) is not None
+            
             # Create initial state
             initial_state = {
-                "messages": [HumanMessage(content=prompt)],
+                "messages": [HumanMessage(content=sanitized_prompt)],
                 "session_id": self.session_id,
                 "rag_context": [],
                 "current_tool": None,
@@ -262,9 +565,38 @@ class LangGraphReactAgent:
             if messages:
                 last_message = messages[-1]
                 if hasattr(last_message, 'content'):
-                    return last_message.content
+                    raw_response = last_message.content
+                    # Clean the response to ensure plain text output
+                    response = clean_llm_response(raw_response)
                 else:
-                    return str(last_message)
+                    response = clean_llm_response(str(last_message))
+                
+                # Update conversation state
+                conversation_manager.update_conversation_state(
+                    self.session_id, 
+                    sanitized_prompt, 
+                    response, 
+                    flight_data_available
+                )
+                
+                # Check if clarification is needed (only if response is not comprehensive)
+                if len(response.strip()) > 50:  # Only check if we have a substantial response
+                    context = conversation_manager.get_or_create_context(self.session_id)
+                    clarification_request = conversation_manager.should_request_clarification(context)
+                    
+                    if clarification_request:
+                        # Add clarification request to response with proper paragraph formatting
+                        response += f"\n\n🤔 Clarification needed: {clarification_request.question}\n\n"
+                        response += f"Context: {clarification_request.context}\n\n"
+                        response += f"Options: {', '.join(clarification_request.options)}"
+                
+                # Add proactive suggestions if available with proper paragraph formatting
+                if context.suggested_actions:
+                    response += f"\n\n💡 Suggestions:\n"
+                    for suggestion in context.suggested_actions:
+                        response += f"• {suggestion}\n"
+                
+                return response
             
             return "No response generated."
             

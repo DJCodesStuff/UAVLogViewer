@@ -1,0 +1,12 @@
+{
+  "documents": [
+    "Flight Data Summary:\nVehicle Type: test_quadcopter\nGPS Trajectory Points: 3\nAltitude Range: 100.0 meters to 110.0 meters\nMaximum Altitude: 110.0 meters\nFlight Duration: 2.0 seconds\nTotal Events: 3\nBattery Voltage Range: 10.2V to 12.6V\nMinimum Battery Voltage: 10.2V\nTemperature Range: 25.0C to 29.0C\nMaximum Temperature: 29.0C\nGPS Status Changes: 3\nSatellite Count Range: 2 to 8\nMaximum HDop: 5.20"
+  ],
+  "embeddings": [],
+  "metadata": [
+    {
+      "added_at": "2025-10-14T19:07:37.533801",
+      "document_id": "92950d27-549a-4177-8b0c-d3344e04ea33"
+    }
+  ]
+}

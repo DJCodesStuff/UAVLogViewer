@@ -1,0 +1,12 @@
+{
+  "documents": [
+    "Flight Data Summary:\nVehicle Type: test_quadcopter\nFlight Modes Used: RTL, MANUAL, AUTO\nTotal Mode Changes: 10\nGPS Trajectory Points: 10\nAltitude Range: 50.0 meters to 110.0 meters\nMaximum Altitude: 110.0 meters\nFlight Duration: 9.0 seconds\nTotal Events: 10\nBattery Voltage Range: 10.2V to 12.6V\nMinimum Battery Voltage: 10.2V\nTemperature Range: 25.0C to 34.0C\nMaximum Temperature: 34.0C\nGPS Status Changes: 10\nSatellite Count Range: 2 to 9\nMaximum HDop: 5.20\nMaximum Horizontal Accuracy: 8.50m\nRC Input Data Points: 10\nRC Signal Loss Events: 1\nVehicle Parameters: 5 parameters available"
+  ],
+  "embeddings": [],
+  "metadata": [
+    {
+      "added_at": "2025-10-14T19:00:30.657016",
+      "document_id": "31f370c3-4175-49ce-9f05-ba5a7e940387"
+    }
+  ]
+}

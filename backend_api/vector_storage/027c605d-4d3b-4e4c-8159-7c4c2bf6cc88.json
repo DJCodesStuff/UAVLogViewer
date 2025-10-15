@@ -1,0 +1,12 @@
+{
+  "documents": [
+    "Flight Data Summary:\nVehicle Type: quadcopterx\nFlight Modes Used: LOITER, LAND\nTotal Mode Changes: 2\nGPS Trajectory Points: 147\nAltitude Range: -0.3 meters to 0.3 meters\nTotal Events: 0\nMission Commands: 0\nVehicle Parameters: 3 parameters available"
+  ],
+  "embeddings": [],
+  "metadata": [
+    {
+      "added_at": "2025-10-14T18:51:15.372782",
+      "document_id": "dd280086-5b21-4661-b992-61ce2eb03f13"
+    }
+  ]
+}

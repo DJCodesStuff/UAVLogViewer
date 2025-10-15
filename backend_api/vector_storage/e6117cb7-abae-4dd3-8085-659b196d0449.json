@@ -1,0 +1,12 @@
+{
+  "documents": [
+    "Flight Data Summary:\nVehicle Type: test_quadcopter\nTotal Events: 3\nBattery Voltage Range: 10.2V to 12.6V\nMinimum Battery Voltage: 10.2V\nTemperature Range: 25.0C to 29.0C\nMaximum Temperature: 29.0C"
+  ],
+  "embeddings": [],
+  "metadata": [
+    {
+      "added_at": "2025-10-14T19:14:44.188585",
+      "document_id": "47f5af7b-1a49-47cd-9580-676331e30c09"
+    }
+  ]
+}

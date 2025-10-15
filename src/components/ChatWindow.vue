@@ -1,9 +1,8 @@
 <template>
-    <div class="chat-window" :style="{ width: windowWidth + 'px', height: windowHeight + 'px' }">
-        <!-- Resize handles -->
-        <div class="resize-handle resize-handle-right" @mousedown="startResize('right')"></div>
+    <div class="chat-window" :style="{ height: windowHeight + 'px' }">
+        <!-- Resize handle -->
         <div class="resize-handle resize-handle-bottom" @mousedown="startResize('bottom')"></div>
-        <div class="resize-handle resize-handle-corner" @mousedown="startResize('corner')"></div>
+        
         <div class="chat-header">
             <h5><i class="fas fa-comments"></i> Chat</h5>
             <div class="session-info">
@@ -71,24 +70,21 @@ export default {
             flightDataSent: false,
             connectionStatus: 'connecting', // connecting, connected, error
             // Resize functionality
-            windowWidth: 400,
             windowHeight: 500,
             isResizing: false,
             resizeType: null,
             startX: 0,
             startY: 0,
-            startWidth: 0,
             startHeight: 0
         }
     },
     methods: {
         // Resize functionality
-        startResize (type) {
+        startResize (type, event) {
             this.isResizing = true
             this.resizeType = type
             this.startX = event.clientX
             this.startY = event.clientY
-            this.startWidth = this.windowWidth
             this.startHeight = this.windowHeight
             document.addEventListener('mousemove', this.handleResize)
             document.addEventListener('mouseup', this.stopResize)
@@ -97,17 +93,9 @@ export default {
 
         handleResize (event) {
             if (!this.isResizing) return
-            const deltaX = event.clientX - this.startX
             const deltaY = event.clientY - this.startY
             switch (this.resizeType) {
-            case 'right':
-                this.windowWidth = Math.max(300, this.startWidth + deltaX)
-                break
             case 'bottom':
-                this.windowHeight = Math.max(200, this.startHeight + deltaY)
-                break
-            case 'corner':
-                this.windowWidth = Math.max(300, this.startWidth + deltaX)
                 this.windowHeight = Math.max(200, this.startHeight + deltaY)
                 break
             }
@@ -345,19 +333,21 @@ export default {
 .chat-window {
   display: flex;
   flex-direction: column;
-  background-color: #2a3441;
-  border-radius: 8px;
-  margin: 10px;
+  background: linear-gradient(0deg, rgb(20, 25, 36) 51%, rgb(37, 47, 71) 100%);
   overflow: hidden;
   position: relative;
-  min-width: 300px;
   min-height: 200px;
+  height: 100%;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  border-left: 3px solid #2e353d;
 }
 
 .chat-header {
-  background-color: #1e252b;
+  background-color: rgba(29, 36, 52, 0.8);
   padding: 12px 16px;
-  border-bottom: 1px solid #3a4553;
+  border-bottom: 1px solid #23282e;
   color: #ffffff;
 }
 
@@ -365,11 +355,12 @@ export default {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
+  color: rgb(54, 72, 114);
 }
 
 .chat-header h5 i {
   margin-right: 8px;
-  color: #64e9ff;
+  color: rgb(54, 72, 114);
 }
 
 .session-info {
@@ -377,7 +368,7 @@ export default {
 }
 
 .session-info small {
-    color: #8a9ba8;
+    color: rgb(146, 143, 143);
     font-size: 11px;
 }
 
@@ -413,7 +404,7 @@ export default {
   flex: 1;
   overflow-y: auto;
   padding: 12px;
-  background-color: #2a3441;
+  background: linear-gradient(0deg, rgb(20, 25, 36) 51%, rgb(37, 47, 71) 100%);
 }
 
 .message {
@@ -437,15 +428,27 @@ export default {
 }
 
 .message.user .message-content {
-  background-color: #64e9ff;
-  color: #1e252b;
+  background-color: rgba(52, 70, 100, 0.8);
+  color: #ffffff;
   border-bottom-right-radius: 4px;
+  border-left: 3px solid #01204191;
 }
 
 .message.bot .message-content {
-  background-color: #3a4553;
+  background-color: rgba(47, 60, 83, 0.63);
   color: #ffffff;
   border-bottom-left-radius: 4px;
+  border-left: 3px solid #2e353d;
+}
+
+.message.user .message-content:hover {
+  background-color: rgba(52, 70, 100, 0.9);
+  box-shadow: 0px 0px 12px 0px rgba(24, 106, 173, 0.281);
+}
+
+.message.bot .message-content:hover {
+  background-color: rgba(58, 71, 94, 0.63);
+  box-shadow: 0px 0px 12px 0px rgba(24, 106, 173, 0.281);
 }
 
 .message-text {
@@ -458,51 +461,61 @@ export default {
   font-size: 11px;
   opacity: 0.7;
   margin-top: 4px;
+  color: rgb(146, 143, 143);
 }
 
 .chat-input {
   padding: 12px;
-  background-color: #1e252b;
-  border-top: 1px solid #3a4553;
+  background-color: rgba(29, 36, 52, 0.8);
+  border-top: 1px solid #23282e;
 }
 
 .input-group {
   display: flex;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .form-control {
-  background-color: #2a3441;
-  border: 1px solid #3a4553;
+  background-color: rgba(47, 60, 83, 0.63);
+  border: 1px solid #23282e;
   color: #ffffff;
   border-radius: 6px 0 0 6px;
   padding: 8px 12px;
   font-size: 14px;
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .form-control:focus {
-  background-color: #2a3441;
-  border-color: #64e9ff;
+  background-color: rgba(47, 60, 83, 0.8);
+  border-color: rgb(54, 72, 114);
   color: #ffffff;
-  box-shadow: 0 0 0 0.2rem rgba(100, 233, 255, 0.25);
+  box-shadow: 0 0 0 0.2rem rgba(54, 72, 114, 0.25);
 }
 
 .form-control::placeholder {
-  color: #8a9ba8;
+  color: rgb(146, 143, 143);
 }
 
 .btn {
   border-radius: 0 6px 6px 0;
   padding: 8px 12px;
-  border: 1px solid #64e9ff;
-  background-color: #64e9ff;
-  color: #1e252b;
+  border: 1px solid rgb(54, 72, 114);
+  background-color: rgb(54, 72, 114);
+  color: #ffffff;
   font-size: 14px;
   transition: all 0.2s ease;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .btn:hover:not(:disabled) {
-  background-color: #4dd0e1;
-  border-color: #4dd0e1;
+  background-color: rgba(54, 72, 114, 0.8);
+  border-color: rgba(54, 72, 114, 0.8);
+  box-shadow: 0px 0px 12px 0px rgba(54, 72, 114, 0.5);
 }
 
 .btn:disabled {
@@ -510,37 +523,28 @@ export default {
   cursor: not-allowed;
 }
 
-/* Scrollbar styling */
+/* Scrollbar styling - match sidebar */
 .chat-messages::-webkit-scrollbar {
-  width: 6px;
-}
-
-.chat-messages::-webkit-scrollbar-track {
-  background: #1e252b;
+  width: 12px;
+  background-color: rgba(0, 0, 0, 0);
 }
 
 .chat-messages::-webkit-scrollbar-thumb {
-  background: #3a4553;
-  border-radius: 3px;
+  border-radius: 5px;
+  box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.1);
+  background: rgb(60, 75, 112);
+  background: linear-gradient(0deg, rgb(67, 95, 155) 51%, rgb(61, 79, 121) 100%);
 }
 
 .chat-messages::-webkit-scrollbar-thumb:hover {
-  background: #4a5563;
+  background: linear-gradient(0deg, rgb(77, 105, 165) 51%, rgb(71, 89, 131) 100%);
 }
 
-/* Resize handles */
+/* Resize handle */
 .resize-handle {
   position: absolute;
   background-color: transparent;
   z-index: 10;
-}
-
-.resize-handle-right {
-  top: 0;
-  right: 0;
-  width: 4px;
-  height: 100%;
-  cursor: ew-resize;
 }
 
 .resize-handle-bottom {
@@ -551,26 +555,8 @@ export default {
   cursor: ns-resize;
 }
 
-.resize-handle-corner {
-  bottom: 0;
-  right: 0;
-  width: 8px;
-  height: 8px;
-  cursor: nw-resize;
-  background-color: #3a4553;
-  border-radius: 2px 0 0 0;
-}
-
-.resize-handle-corner:hover {
-  background-color: #64e9ff;
-}
-
 /* Show resize cursor on hover */
-.chat-window:hover .resize-handle-right {
-  background-color: rgba(100, 233, 255, 0.3);
-}
-
 .chat-window:hover .resize-handle-bottom {
-  background-color: rgba(100, 233, 255, 0.3);
+  background-color: rgba(54, 72, 114, 0.3);
 }
 </style>
