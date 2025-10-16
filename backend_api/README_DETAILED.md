@@ -218,7 +218,6 @@ self.llm_agents[session_id] = LangGraphReactAgent(session_id=session_id)
 - **Memory Usage**: ~10-15MB per session (agent + RAG + memory)
 - **Response Times**: 2-5s (simple), 5-15s (complex analysis)
 - **Scalability**: 50+ concurrent sessions
-- **Error Handling**: Graceful degradation with best-effort tool execution
 
 The LangGraphReactAgent serves as the core intelligence layer, transforming raw flight data into actionable insights through sophisticated multi-tool orchestration and context-aware analysis.
 
