@@ -55,6 +55,7 @@
 
 <script>
 import { store } from './Globals.js'
+import { MavlinkDataExtractor } from '../tools/mavlinkDataExtractor'
 
 export default {
     name: 'ChatWindow',
@@ -199,6 +200,16 @@ export default {
 
             try {
                 // Prepare flight data from the global state (send all relevant data fields)
+                // Derive GPS health (if raw messages are present)
+                let gpsHealth
+                try {
+                    if (this.state && this.state.messages) {
+                        gpsHealth = MavlinkDataExtractor.extractGpsHealth(this.state.messages)
+                    }
+                } catch (e) {
+                    console.warn('Failed to extract GPS health:', e)
+                }
+
                 const flightData = {
                     // Core
                     vehicle: this.state.vehicle,
@@ -207,6 +218,9 @@ export default {
                     metadata: this.state.metadata,
                     params: this.state.params,
                     defaultParams: this.state.defaultParams,
+                    // GPS health/metadata
+                    // eslint-disable-next-line camelcase
+                    gps_metadata: gpsHealth,
                     // Trajectories and attitude
                     trajectories: this.state.trajectories,
                     timeTrajectory: this.state.timeTrajectory,

@@ -186,6 +186,18 @@ class FlightAnomalyDetector:
             for param_name, param_value in flight_data['params'].items():
                 if isinstance(param_value, (int, float)):
                     time_series[param_name].append((0, param_value))
+
+        # Extract attitude series if provided (normalized from frontend)
+        if 'attitude_series' in flight_data and isinstance(flight_data['attitude_series'], list):
+            for entry in flight_data['attitude_series']:
+                if isinstance(entry, dict):
+                    ts = entry.get('timestamp', 0)
+                    if isinstance(entry.get('roll'), (int, float)):
+                        time_series['roll'].append((ts, float(entry['roll'])))
+                    if isinstance(entry.get('pitch'), (int, float)):
+                        time_series['pitch'].append((ts, float(entry['pitch'])))
+                    if isinstance(entry.get('yaw'), (int, float)):
+                        time_series['yaw'].append((ts, float(entry['yaw'])))
         
         return dict(time_series)
     

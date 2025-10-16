@@ -463,4 +463,31 @@ export class DataflashDataExtractor {
     static extractStartTime (messages) {
         return extractStartTime(messages)
     }
+
+    static extractBatterySeries (messages) {
+        const series = []
+        if ('BAT' in messages) {
+            const m = messages.BAT
+            for (const i in m.time_boot_ms) {
+                series.push({
+                    timestamp: m.time_boot_ms[i],
+                    voltage: m.Volt ? m.Volt[i] : undefined,
+                    current: m.Curr ? m.Curr[i] : undefined,
+                    remaining: undefined,
+                    temperature: m.Temp ? m.Temp[i] : undefined
+                })
+            }
+        }
+        if ('CURR' in messages) {
+            const m = messages.CURR
+            for (const i in m.time_boot_ms) {
+                series.push({
+                    timestamp: m.time_boot_ms[i],
+                    voltage: m.Volt ? m.Volt[i] : undefined,
+                    current: m.Curr ? m.Curr[i] : undefined
+                })
+            }
+        }
+        return series
+    }
 }

@@ -159,6 +159,44 @@ def format_flight_data_text(flight_data: dict) -> str:
         Formatted plain text string
     """
     formatted_parts = []
+
+    # Descriptive overview for RAG (LLM-friendly prose)
+    try:
+        vehicle = flight_data.get('vehicle')
+        duration_s = None
+        gps_points = None
+        if 'trajectories' in flight_data:
+            for _, tdata in flight_data['trajectories'].items():
+                if isinstance(tdata, dict) and 'trajectory' in tdata and tdata['trajectory']:
+                    gps_points = len(tdata['trajectory'])
+                    if len(tdata['trajectory'][0]) > 3 and len(tdata['trajectory'][-1]) > 3:
+                        start_time = tdata['trajectory'][0][3]
+                        end_time = tdata['trajectory'][-1][3]
+                        duration_s = (end_time - start_time) / 1000.0
+                    break
+        modes = []
+        if 'flightModeChanges' in flight_data:
+            try:
+                modes = [m[1] for m in flight_data['flightModeChanges'] if isinstance(m, (list, tuple)) and len(m) >= 2]
+            except Exception:
+                modes = []
+        params_count = len(flight_data.get('params') or {}) if isinstance(flight_data.get('params'), dict) else 0
+        events_count = len(flight_data.get('events') or []) if isinstance(flight_data.get('events'), list) else 0
+
+        overview_bits = []
+        if vehicle:
+            overview_bits.append(f"a {vehicle}")
+        if isinstance(duration_s, (int, float)):
+            overview_bits.append(f"lasting about {duration_s:.0f} seconds")
+        if isinstance(gps_points, int):
+            overview_bits.append(f"with {gps_points} GPS points recorded")
+        if modes:
+            overview_bits.append(f"modes observed: {', '.join(sorted(set(modes)))}")
+        overview_tail = f"{events_count} events and {params_count} parameters captured"
+        overview_sentence = "This flight appears to be " + ", ".join(overview_bits) + (", " if overview_bits else "") + overview_tail + "."
+        formatted_parts.append(overview_sentence)
+    except Exception:
+        pass
     
     # Vehicle information
     if 'vehicle' in flight_data:
@@ -224,28 +262,97 @@ def format_flight_data_text(flight_data: dict) -> str:
             min_temp = min(temperatures)
             formatted_parts.append(f"Temperature Range: {min_temp:.1f}°C to {max_temp:.1f}°C")
             formatted_parts.append(f"Maximum Temperature: {max_temp:.1f}°C")
+
+        # Error/Warning events
+        try:
+            err_like = []
+            for e in flight_data['events']:
+                if isinstance(e, dict):
+                    t = str(e.get('type', '')).upper()
+                    m = str(e.get('message', '')).upper()
+                    if 'ERR' in t or 'ERROR' in t or 'WARN' in t or 'FAIL' in t or 'CRIT' in t or 'EMERGENCY' in t or 'ALERT' in t or 'FAIL' in m or 'ERR' in m or 'WARN' in m:
+                        err_like.append(e)
+            if err_like:
+                formatted_parts.append(f"Error/Warning Events: {len(err_like)}")
+                formatted_parts.append("Error/Warning Timeline (t, type, message):")
+                for e in err_like[:20]:
+                    formatted_parts.append(f"t={e.get('timestamp', 0)}, {e.get('type','')}, {e.get('message','')}")
+        except Exception:
+            pass
     
     # Enhanced GPS metadata analysis
     if 'gps_metadata' in flight_data:
         gps_meta = flight_data['gps_metadata']
         if 'status_changes' in gps_meta:
             formatted_parts.append(f"GPS Status Changes: {len(gps_meta['status_changes'])}")
+            # Timeline for quick LLM parsing
+            formatted_parts.append("GPS Status Timeline (t, status):")
+            try:
+                for sc in gps_meta['status_changes']:
+                    if isinstance(sc, dict):
+                        formatted_parts.append(f"t={sc.get('timestamp', 0)}, {sc.get('status','')}")
+            except Exception:
+                pass
         if 'satellite_counts' in gps_meta:
             sat_counts = gps_meta['satellite_counts']
             if sat_counts:
                 min_sats = min(sat_counts)
                 max_sats = max(sat_counts)
                 formatted_parts.append(f"Satellite Count Range: {min_sats} to {max_sats}")
+                try:
+                    avg_sats = sum(sat_counts) / len(sat_counts)
+                    formatted_parts.append(f"Average Satellites: {avg_sats:.1f}")
+                except Exception:
+                    pass
         if 'signal_quality' in gps_meta:
             hdop_values = [sq.get('hdop', 0) for sq in gps_meta['signal_quality'] if 'hdop' in sq]
             if hdop_values:
                 max_hdop = max(hdop_values)
                 formatted_parts.append(f"Maximum HDop: {max_hdop:.2f}")
+            vdop_values = [sq.get('vdop', 0) for sq in gps_meta['signal_quality'] if 'vdop' in sq]
+            if vdop_values:
+                max_vdop = max(vdop_values)
+                formatted_parts.append(f"Maximum VDop: {max_vdop:.2f}")
         if 'accuracy_metrics' in gps_meta:
             hacc_values = [am.get('hacc', 0) for am in gps_meta['accuracy_metrics'] if 'hacc' in am]
             if hacc_values:
                 max_hacc = max(hacc_values)
                 formatted_parts.append(f"Maximum Horizontal Accuracy: {max_hacc:.2f}m")
+            vacc_values = [am.get('vacc', 0) for am in gps_meta['accuracy_metrics'] if 'vacc' in am]
+            if vacc_values:
+                max_vacc = max(vacc_values)
+                formatted_parts.append(f"Maximum Vertical Accuracy: {max_vacc:.2f}m")
+
+    # GPS sources and endpoints
+    try:
+        if 'trajectorySources' in flight_data and flight_data['trajectorySources']:
+            formatted_parts.append(f"Trajectory Sources: {', '.join(map(str, flight_data['trajectorySources']))}")
+        if 'trajectories' in flight_data:
+            for _, traj_data in flight_data['trajectories'].items():
+                if isinstance(traj_data, dict) and 'trajectory' in traj_data and traj_data['trajectory']:
+                    first_pt = traj_data['trajectory'][0]
+                    last_pt = traj_data['trajectory'][-1]
+                    if isinstance(first_pt, (list, tuple)) and len(first_pt) >= 2 and isinstance(last_pt, (list, tuple)) and len(last_pt) >= 2:
+                        formatted_parts.append(f"Start Coord: {first_pt[1]:.6f},{first_pt[0]:.6f}")
+                        formatted_parts.append(f"End Coord: {last_pt[1]:.6f},{last_pt[0]:.6f}")
+                    break
+    except Exception:
+        pass
+
+    # GPS-related events (count)
+    try:
+        if 'events' in flight_data and isinstance(flight_data['events'], list):
+            gps_ev = 0
+            for ev in flight_data['events']:
+                if isinstance(ev, dict):
+                    et = str(ev.get('type', '')).upper()
+                    msg = str(ev.get('message', '')).upper()
+                    if 'GPS' in et or 'GPS' in msg or 'SIGNAL' in et or 'SIGNAL' in msg:
+                        gps_ev += 1
+            if gps_ev:
+                formatted_parts.append(f"GPS Events: {gps_ev}")
+    except Exception:
+        pass
     
     # RC input analysis
     if 'rc_inputs' in flight_data:
@@ -255,6 +362,19 @@ def format_flight_data_text(flight_data: dict) -> str:
         signal_loss_events = [rc for rc in rc_data if rc.get('signal_lost', False)]
         if signal_loss_events:
             formatted_parts.append(f"RC Signal Loss Events: {len(signal_loss_events)}")
+
+    # STATUSTEXT / textual error logs
+    try:
+        if isinstance(flight_data.get('textMessages'), list) and flight_data['textMessages']:
+            formatted_parts.append(f"Status Text Messages: {len(flight_data['textMessages'])}")
+            # Include a concise timeline of likely errors/warnings
+            formatted_parts.append("StatusText Timeline (t, severity, text):")
+            for tm in flight_data['textMessages'][:50]:
+                # expected shape: [timestamp, severity, text]
+                if isinstance(tm, (list, tuple)) and len(tm) >= 3:
+                    formatted_parts.append(f"t={tm[0]}, sev={tm[1]}, {tm[2]}")
+    except Exception:
+        pass
     
     # Mission data
     if 'mission' in flight_data:
@@ -264,6 +384,83 @@ def format_flight_data_text(flight_data: dict) -> str:
     if 'params' in flight_data:
         formatted_parts.append(f"Vehicle Parameters: {len(flight_data['params'])} parameters available")
     
+    # Timestamped GPS data (trajectory points)
+    try:
+        if 'trajectories' in flight_data:
+            for trajectory_name, trajectory_data in flight_data['trajectories'].items():
+                if isinstance(trajectory_data, dict) and 'trajectory' in trajectory_data and trajectory_data['trajectory']:
+                    formatted_parts.append("GPS Points (timestamp, lat, lon, alt):")
+                    for pt in trajectory_data['trajectory']:
+                        if isinstance(pt, (list, tuple)):
+                            lat = pt[1] if len(pt) > 1 else None
+                            lon = pt[0] if len(pt) > 0 else None
+                            alt = pt[2] if len(pt) > 2 else None
+                            ts = pt[3] if len(pt) > 3 else None
+                            formatted_parts.append(f"t={ts}, {lat}, {lon}, {alt}")
+                    break  # include first available trajectory
+    except Exception:
+        pass
+
+    # Timestamped GPS metadata series (status, quality, accuracy)
+    try:
+        gps_meta = flight_data.get('gps_metadata') or {}
+        if isinstance(gps_meta, dict):
+            if 'status_changes' in gps_meta and gps_meta['status_changes']:
+                formatted_parts.append("GPS Status Changes (t, status, fix):")
+                for sc in gps_meta['status_changes']:
+                    if isinstance(sc, dict):
+                        formatted_parts.append(f"t={sc.get('timestamp', 0)}, {sc.get('status','')}, {sc.get('fix_type','')}")
+            if 'signal_quality' in gps_meta and gps_meta['signal_quality']:
+                formatted_parts.append("GPS Signal Quality (t, hdop, vdop):")
+                for sq in gps_meta['signal_quality']:
+                    if isinstance(sq, dict):
+                        formatted_parts.append(f"t={sq.get('timestamp', 0)}, {sq.get('hdop','')}, {sq.get('vdop','')}")
+            if 'accuracy_metrics' in gps_meta and gps_meta['accuracy_metrics']:
+                formatted_parts.append("GPS Accuracy (t, hacc, vacc, sacc):")
+                for am in gps_meta['accuracy_metrics']:
+                    if isinstance(am, dict):
+                        formatted_parts.append(f"t={am.get('timestamp', 0)}, {am.get('hacc','')}, {am.get('vacc','')}, {am.get('sacc','')}")
+    except Exception:
+        pass
+
+    # Timestamped battery and temperature (from events)
+    try:
+        if 'events' in flight_data and isinstance(flight_data['events'], list):
+            bat_lines = []
+            temp_lines = []
+            for e in flight_data['events']:
+                if isinstance(e, dict):
+                    ts = e.get('timestamp', 0)
+                    if 'battery_voltage' in e:
+                        bat_lines.append(f"t={ts}, {e.get('battery_voltage')}")
+                    if 'temperature' in e:
+                        temp_lines.append(f"t={ts}, {e.get('temperature')}")
+            if bat_lines:
+                formatted_parts.append("Battery Voltage (t, V):")
+                formatted_parts.extend(bat_lines)
+            if temp_lines:
+                formatted_parts.append("Temperature (t, C):")
+                formatted_parts.extend(temp_lines)
+    except Exception:
+        pass
+
+    # Timestamped battery series (if provided separately)
+    try:
+        if isinstance(flight_data.get('battery_series'), list) and flight_data['battery_series']:
+            formatted_parts.append("Battery Series (t, V, A, %):")
+            for item in flight_data['battery_series']:
+                if isinstance(item, dict):
+                    formatted_parts.append(
+                        f"t={item.get('timestamp',0)}, {item.get('voltage','')}, {item.get('current','')}, {item.get('remaining','')}"
+                    )
+        if isinstance(flight_data.get('battery_temp_series'), list) and flight_data['battery_temp_series']:
+            formatted_parts.append("Battery Temperature (t, C):")
+            for item in flight_data['battery_temp_series']:
+                if isinstance(item, dict):
+                    formatted_parts.append(f"t={item.get('timestamp',0)}, {item.get('temperature','')}")
+    except Exception:
+        pass
+
     # Join all parts with clean formatting
     result = "Flight Data Summary:\n" + "\n".join(formatted_parts)
     

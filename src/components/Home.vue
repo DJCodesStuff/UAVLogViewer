@@ -188,6 +188,15 @@ export default {
                 console.log('unable to load named floats')
                 console.log(error)
             }
+            // Battery series extraction (best-effort)
+            try {
+                if (typeof this.dataExtractor.extractBatterySeries === 'function') {
+                    this.state.batterySeries = this.dataExtractor.extractBatterySeries(this.state.messages)
+                }
+            } catch (e) {
+                console.log('unable to load battery series', e)
+                this.state.batterySeries = []
+            }
             Vue.delete(this.state.messages, 'AHR2')
             Vue.delete(this.state.messages, 'POS')
             Vue.delete(this.state.messages, 'GPS')

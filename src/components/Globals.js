@@ -37,6 +37,7 @@ export const store = {
     timeRange: null,
     textMessages: [],
     namedFloats: [],
+    batterySeries: [],
     metadata: null,
     // cesium menu:
     modelScale: 1.0,

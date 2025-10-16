@@ -324,4 +324,145 @@ export class MavlinkDataExtractor {
     static extractStartTime (messages) {
         return undefined
     }
+
+    static extractGpsHealth (messages) {
+        /* eslint-disable camelcase */
+        const gpsHealth = {
+            'status_changes': [],
+            'satellite_counts': [],
+            'signal_quality': [],
+            'accuracy_metrics': []
+        }
+
+        // Prefer GPS_RAW_INT as primary time series source
+        if ('GPS_RAW_INT' in messages) {
+            const gps = messages.GPS_RAW_INT
+            // Build status changes based on fix_type transitions
+            const fixName = (ft) => {
+                const map = {
+                    0: 'NO_GPS',
+                    1: 'NO_FIX',
+                    2: '2D_FIX',
+                    3: '3D_FIX',
+                    4: 'DGPS',
+                    5: 'RTK_FLOAT',
+                    6: 'RTK_FIXED',
+                    7: 'STATIC',
+                    8: 'PPP'
+                }
+                return map[ft] || String(ft)
+            }
+            let lastFix = null
+            for (const i in gps.time_boot_ms) {
+                const t = gps.time_boot_ms[i]
+                // Satellites
+                if (gps['satellites_visible'] && gps['satellites_visible'][i] !== undefined) {
+                    gpsHealth['satellite_counts'].push(parseInt(gps['satellites_visible'][i]))
+                }
+                // Signal quality (HDOP/VDOP where available as eph/epv)
+                if (gps.eph && gps.eph[i] !== undefined) {
+                    const entry = { timestamp: t, hdop: parseFloat(gps.eph[i]) }
+                    if (gps.epv && gps.epv[i] !== undefined) {
+                        entry.vdop = parseFloat(gps.epv[i])
+                    }
+                    gpsHealth['signal_quality'].push(entry)
+                }
+                // Accuracy metrics (h_acc/v_acc if present)
+                const hasHAcc = gps['h_acc'] && gps['h_acc'][i] !== undefined
+                const hasVAcc = gps['v_acc'] && gps['v_acc'][i] !== undefined
+                if (hasHAcc || hasVAcc) {
+                    gpsHealth['accuracy_metrics'].push({
+                        timestamp: t,
+                        hacc: hasHAcc ? parseFloat(gps['h_acc'][i]) : undefined,
+                        vacc: hasVAcc ? parseFloat(gps['v_acc'][i]) : undefined
+                    })
+                }
+                // Fix type transitions
+                if (gps['fix_type'] && gps['fix_type'][i] !== undefined) {
+                    const curr = parseInt(gps['fix_type'][i])
+                    if (lastFix === null || curr !== lastFix) {
+                        gpsHealth['status_changes'].push({ timestamp: t, status: fixName(curr), 'fix_type': curr })
+                        lastFix = curr
+                    }
+                }
+            }
+        }
+
+        // GPS_STATUS may provide satellite visibility snapshots without timestamps
+        if ('GPS_STATUS' in messages && gpsHealth['satellite_counts'].length === 0) {
+            const status = messages.GPS_STATUS
+            if (status.satellites_visible && status.satellites_visible.length) {
+                for (const i in status.satellites_visible) {
+                    gpsHealth['satellite_counts'].push(parseInt(status.satellites_visible[i]))
+                }
+            }
+        }
+
+        /* eslint-enable camelcase */
+        return gpsHealth
+    }
+
+    static extractBatterySeries (messages) {
+        const series = []
+        // SYS_STATUS: voltage_battery (mV), current_battery (cA), battery_remaining (%)
+        if ('SYS_STATUS' in messages) {
+            const m = messages.SYS_STATUS
+            for (const i in m.time_boot_ms) {
+                const ts = m.time_boot_ms[i]
+                const v = m.voltage_battery ? m.voltage_battery[i] : undefined // mV
+                const c = m.current_battery ? m.current_battery[i] : undefined // cA
+                const rem = m.battery_remaining ? m.battery_remaining[i] : undefined // %
+                series.push({
+                    timestamp: ts,
+                    voltage: (typeof v === 'number') ? v / 1000.0 : undefined,
+                    current: (typeof c === 'number') ? c / 100.0 : undefined,
+                    remaining: rem
+                })
+            }
+        }
+        // BATTERY_STATUS (optional)
+        if ('BATTERY_STATUS' in messages) {
+            const b = messages.BATTERY_STATUS
+            for (const i in b.time_boot_ms) {
+                const ts = b.time_boot_ms[i]
+                const temp = b.temperature ? b.temperature[i] : undefined // cdegC
+                const cur = b.current_battery ? b.current_battery[i] : undefined // cA
+                const voltArray = b.voltages ? b.voltages[i] : null // per-cell mV array
+                let totalV
+                if (Array.isArray(voltArray)) {
+                    totalV = voltArray.reduce((a, v) => a + (typeof v === 'number' ? v : 0), 0)
+                }
+                series.push({
+                    timestamp: ts,
+                    voltage: (typeof totalV === 'number' && totalV > 0) ? totalV / 1000.0 : undefined,
+                    current: (typeof cur === 'number') ? cur / 100.0 : undefined,
+                    temperature: (typeof temp === 'number') ? temp / 100.0 : undefined
+                })
+            }
+        }
+        // Additional temperature sources (best-effort): SCALED_PRESSURE temperature (air), NAMED_VALUE_FLOAT
+        if ('SCALED_PRESSURE' in messages) {
+            const sp = messages.SCALED_PRESSURE
+            for (const i in sp.time_boot_ms) {
+                const ts = sp.time_boot_ms[i]
+                const tempC = (typeof sp.temperature?.[i] === 'number') ? sp.temperature[i] / 100.0 : undefined
+                if (tempC !== undefined) {
+                    series.push({ timestamp: ts, temperature: tempC })
+                }
+            }
+        }
+        if ('NAMED_VALUE_FLOAT' in messages) {
+            const nvf = messages.NAMED_VALUE_FLOAT
+            if (Array.isArray(nvf.time_boot_ms) && Array.isArray(nvf.name) && Array.isArray(nvf.value)) {
+                for (const i in nvf.time_boot_ms) {
+                    const name = String(nvf.name[i] || '').toUpperCase()
+                    // Heuristic: only pick likely battery temps
+                    if (name.includes('BATT') && name.includes('TEMP')) {
+                        series.push({ timestamp: nvf.time_boot_ms[i], temperature: nvf.value[i] })
+                    }
+                }
+            }
+        }
+        return series
+    }
 }

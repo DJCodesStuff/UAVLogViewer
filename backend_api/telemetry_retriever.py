@@ -141,6 +141,30 @@ class DynamicTelemetryRetriever:
         parameter_upper = parameter.upper()
         extracted_data = []
         
+        # Attitude series (roll/pitch/yaw)
+        if parameter_upper in ['ATTITUDE', 'ROLL', 'PITCH', 'YAW']:
+            series = flight_data.get('attitude_series')
+            if isinstance(series, list):
+                for item in series:
+                    if not isinstance(item, dict):
+                        continue
+                    ts = item.get('timestamp', 0)
+                    if parameter_upper == 'ATTITUDE':
+                        extracted_data.append({
+                            'timestamp': ts,
+                            'roll': item.get('roll'),
+                            'pitch': item.get('pitch'),
+                            'yaw': item.get('yaw'),
+                            'type': 'attitude'
+                        })
+                    elif parameter_upper == 'ROLL' and isinstance(item.get('roll'), (int, float)):
+                        extracted_data.append({'timestamp': ts, 'value': item['roll'], 'type': 'roll'})
+                    elif parameter_upper == 'PITCH' and isinstance(item.get('pitch'), (int, float)):
+                        extracted_data.append({'timestamp': ts, 'value': item['pitch'], 'type': 'pitch'})
+                    elif parameter_upper == 'YAW' and isinstance(item.get('yaw'), (int, float)):
+                        extracted_data.append({'timestamp': ts, 'value': item['yaw'], 'type': 'yaw'})
+                return extracted_data
+
         # GPS-related parameters
         if parameter_upper in ['GPS', 'GPS_POSITION', 'GPS_COORDINATES']:
             if 'trajectories' in flight_data:
@@ -333,7 +357,7 @@ class DynamicTelemetryRetriever:
         
         # Comprehensive parameter extraction
         elif parameter_upper in ['PARAMETERS', 'ALL_PARAMETERS', 'VEHICLE_PARAMS']:
-            if 'params' in flight_data:
+            if 'params' in flight_data and isinstance(flight_data['params'], dict):
                 for param_name, param_value in flight_data['params'].items():
                     extracted_data.append({
                         "timestamp": 0,
@@ -383,7 +407,7 @@ class DynamicTelemetryRetriever:
                         found_data = True
             
             # Check in parameters
-            if 'params' in flight_data and not found_data:
+            if 'params' in flight_data and isinstance(flight_data['params'], dict) and not found_data:
                 for param_name, param_value in flight_data['params'].items():
                     if parameter_upper in param_name.upper():
                         extracted_data.append({
@@ -446,10 +470,14 @@ class DynamicTelemetryRetriever:
                     available.append(f'EVENT_{event["type"].upper()}')
         
         # Parameters
-        if 'params' in flight_data:
+        if 'params' in flight_data and isinstance(flight_data['params'], dict):
             available.extend(['PARAMETERS', 'ALL_PARAMETERS', 'VEHICLE_PARAMS'])
             available.extend(list(flight_data['params'].keys()))
         
+        # Attitude series
+        if isinstance(flight_data.get('attitude_series'), list) and flight_data['attitude_series']:
+            available.extend(['ATTITUDE', 'ROLL', 'PITCH', 'YAW'])
+
         # Mission data
         if 'mission' in flight_data:
             available.extend(['MISSION', 'MISSION_DATA', 'WAYPOINTS'])

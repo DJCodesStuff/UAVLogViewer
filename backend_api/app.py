@@ -4,10 +4,10 @@ import uuid
 import time
 from datetime import datetime
 import json
+import os
 from typing import Dict, List, Any
 import logging
 from llm_config import LangGraphReactAgent
-from text_utils import clean_llm_response, sanitize_text
 from rag_manager import get_global_rag_manager
 from telemetry_retriever import get_global_telemetry_retriever
 from conversation_state import get_global_conversation_manager
@@ -103,14 +103,17 @@ class SessionManager:
         if session_id not in self.sessions:
             return False
         
+        # Normalize incoming flight data to backend-friendly schema
+        normalized = self._normalize_flight_data(flight_data)
+
         # Store the flight data
-        self.flight_data[session_id] = flight_data
-        self.sessions[session_id]['flight_data'] = flight_data
+        self.flight_data[session_id] = normalized
+        self.sessions[session_id]['flight_data'] = normalized
         
         # Immediately sync to telemetry retriever cache
         try:
             telemetry_retriever = get_global_telemetry_retriever()
-            telemetry_retriever.set_flight_data(session_id, flight_data)
+            telemetry_retriever.set_flight_data(session_id, normalized)
         except Exception as e:
             logger.warning(f"Failed to set telemetry data for session {session_id}: {e}")
         
@@ -119,24 +122,24 @@ class SessionManager:
         context['has_flight_data'] = True
         
         # Extract key information from flight data
-        if 'vehicle' in flight_data:
-            context['vehicle_type'] = flight_data['vehicle']
+        if 'vehicle' in normalized:
+            context['vehicle_type'] = normalized['vehicle']
         
-        if 'metadata' in flight_data and flight_data['metadata']:
-            if 'startTime' in flight_data['metadata']:
-                context['start_time'] = flight_data['metadata']['startTime']
+        if 'metadata' in normalized and normalized['metadata']:
+            if 'startTime' in normalized['metadata']:
+                context['start_time'] = normalized['metadata']['startTime']
         
-        if 'flightModeChanges' in flight_data:
-            context['flight_modes'] = [mode[1] for mode in flight_data['flightModeChanges']]
-            context['total_events'] = len(flight_data['flightModeChanges'])
+        if 'flightModeChanges' in normalized:
+            context['flight_modes'] = [mode[1] for mode in normalized['flightModeChanges'] if isinstance(mode, (list, tuple)) and len(mode) > 1]
+            context['total_events'] = len(normalized['flightModeChanges'])
         
-        if 'trajectories' in flight_data:
-            for trajectory_name, trajectory_data in flight_data['trajectories'].items():
+        if 'trajectories' in normalized:
+            for trajectory_name, trajectory_data in normalized['trajectories'].items():
                 if 'trajectory' in trajectory_data:
                     context['gps_points'] = len(trajectory_data['trajectory'])
                     
                     # Calculate altitude and speed ranges
-                    altitudes = [point[2] for point in trajectory_data['trajectory'] if len(point) > 2]
+                    altitudes = [point[2] for point in trajectory_data['trajectory'] if isinstance(point, (list, tuple)) and len(point) > 2]
                     if altitudes:
                         context['altitude_range'] = {
                             'min': min(altitudes),
@@ -148,6 +151,83 @@ class SessionManager:
         self.update_session_activity(session_id)
         logger.info(f"Stored flight data for session {session_id}")
         return True
+
+    def _normalize_flight_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Best-effort normalization of frontend payload to structures expected by backend.
+
+        - params: ensure dict of {name: value}
+        - events: ensure list of dicts with at least {timestamp, type, message}
+        - attitude_series: derive from timeAttitude if present
+        - rc_inputs: pass-through if present, else omit
+        """
+        try:
+            normalized = dict(data) if isinstance(data, dict) else {}
+
+            # Normalize params
+            params_obj = normalized.get('params')
+            if isinstance(params_obj, dict):
+                pass
+            elif isinstance(params_obj, list):
+                # Expect list of [timestamp, name, value]
+                params_dict = {}
+                for entry in params_obj:
+                    if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+                        _, name, value = entry[0], entry[1], entry[2]
+                        if isinstance(name, str):
+                            params_dict[name] = value
+                normalized['params'] = params_dict
+            else:
+                # Unknown shape (e.g., ParamSeeker-like); try to snapshot to dict via common attributes
+                params_dict = {}
+                try:
+                    # If it's a mapping-like
+                    for k in getattr(params_obj, 'keys', lambda: [])():
+                        params_dict[k] = params_obj[k]
+                except Exception:
+                    pass
+                normalized['params'] = params_dict
+
+            # Normalize events: list of dicts
+            events = normalized.get('events')
+            if isinstance(events, list):
+                new_events = []
+                for ev in events:
+                    if isinstance(ev, dict):
+                        new_events.append(ev)
+                    elif isinstance(ev, (list, tuple)) and len(ev) >= 2:
+                        ts, label = ev[0], ev[1]
+                        new_events.append({
+                            'timestamp': float(ts) if isinstance(ts, (int, float)) else 0,
+                            'type': str(label),
+                            'message': str(label),
+                            'severity': 'info'
+                        })
+                normalized['events'] = new_events
+
+            # Build attitude_series from timeAttitude (map of timestamp -> [r,p,y])
+            if 'attitude_series' not in normalized:
+                time_att = normalized.get('timeAttitude')
+                if isinstance(time_att, dict):
+                    series = []
+                    for ts_str, angles in time_att.items():
+                        try:
+                            ts = float(ts_str)
+                        except Exception:
+                            ts = float(angles[3]) if isinstance(angles, (list, tuple)) and len(angles) > 3 and isinstance(angles[3], (int, float)) else 0.0
+                        if isinstance(angles, (list, tuple)) and len(angles) >= 3:
+                            series.append({
+                                'timestamp': ts,
+                                'roll': angles[0],
+                                'pitch': angles[1],
+                                'yaw': angles[2]
+                            })
+                    if series:
+                        normalized['attitude_series'] = series
+
+            return normalized
+        except Exception as e:
+            logger.warning(f"Flight data normalization failed: {e}")
+            return data
     
     def get_flight_data_summary(self, session_id: str) -> Dict[str, Any]:
         """Get a summary of flight data for the session"""
@@ -211,7 +291,19 @@ class SessionManager:
             # Format flight data as text
             from text_utils import format_flight_data_text
             flight_data_text = format_flight_data_text(flight_data)
-            result = rag_manager.add_documents(session_id, [flight_data_text])
+            documents = [flight_data_text]
+            metadata_list = [{
+                'type': 'overview',
+                'session_id': session_id
+            }]
+
+            # Local export disabled
+            # try:
+            #     self._export_rag_documents(session_id, documents, metadata_list)
+            # except Exception as exp_err:
+            #     logger.warning(f"RAG local export failed for session {session_id}: {exp_err}")
+
+            result = rag_manager.add_documents(session_id, documents, metadata_list=metadata_list)
             
             # Also add to telemetry retriever for dynamic queries
             telemetry_retriever = get_global_telemetry_retriever()
@@ -222,6 +314,10 @@ class SessionManager:
         except Exception as e:
             logger.error(f"Failed to add flight data to RAG for session {session_id}: {str(e)}")
             return f"Error adding flight data to RAG: {str(e)}"
+
+    def _export_rag_documents(self, session_id: str, documents: List[str], metadata_list: List[Dict[str, Any]]):
+        """Local RAG export disabled (rag_exports no-op)."""
+        return
     
     def _format_flight_data_for_rag(self, flight_data: Dict[str, Any]) -> str:
         """Format flight data as text for RAG ingestion"""
@@ -770,7 +866,7 @@ def get_data_completeness(session_id):
         return jsonify({'error': str(e)}), 500
 
 def generate_chat_response(session_id: str, user_message: str) -> str:
-    """Generate a dynamic response using the LLM agent with agentic anomaly detection"""
+    """Generate a response using the new three-layer pipeline with safe fallback."""
     session = session_manager.get_session(session_id)
     if not session:
         return "I'm sorry, I couldn't find your session. Please try again."
@@ -781,312 +877,18 @@ def generate_chat_response(session_id: str, user_message: str) -> str:
         return "I'm sorry, I'm having trouble connecting to the AI service. Please try again later."
     
     try:
-        # Get session context for better responses
-        context = session_manager.get_flight_data_summary(session_id)
-        available_types = session_manager.get_available_data_types(session_id)
-        
-        # Check if this is an investigative question that requires anomaly analysis
-        is_investigative = _is_investigative_question(user_message)
-        
-        if is_investigative and context.get('has_flight_data', False):
-            # Use agentic anomaly detection for investigative questions
-            return _handle_investigative_question(session_id, user_message, agent)
-        
-        # Build context-aware prompt for regular questions
-        context_info = ""
-        if context.get('has_flight_data', False):
-            context_info = f"""
-Flight Data Context:
-- Vehicle Type: {context.get('vehicle_type', 'Unknown')}
-- Available Data Types: {', '.join(available_types)}
-- GPS Points: {context.get('gps_points', 0)}
-- Flight Modes: {', '.join(context.get('flight_modes', []))}
-- Total Events: {context.get('total_events', 0)}
-"""
-            if context.get('altitude_range'):
-                alt_range = context['altitude_range']
-                context_info += f"- Altitude Range: {alt_range['min']:.1f}m to {alt_range['max']:.1f}m\n"
-        else:
-            context_info = "No flight data has been uploaded yet. Please upload a log file first."
-        
-        # Create enhanced prompt with context
-        enhanced_prompt = f"""
-{context_info}
-
-User Question: {user_message}
-
-Please provide a helpful and detailed response about the flight data or UAV analysis. If flight data is available, use it to provide specific insights. If no flight data is available, explain what the user needs to do to get started.
-"""
-        
-        # Generate response using the LLM agent
-        raw_response = agent.generate(enhanced_prompt)
-        
-        # Clean the response to ensure plain text output
-        response = clean_llm_response(raw_response)
-        
-        # Fallback to basic response if LLM fails
-        if not response or response.strip() == "":
-            if context.get('has_flight_data', False):
-                return f"I can help you analyze your flight data. You have {', '.join(available_types)} available. What specific aspect would you like to know more about?"
-            else:
-                return "Hello! I'm your UAV Log Viewer assistant. Please upload a flight log file first, and then I'll be able to help you with detailed analysis!"
-        
-        return response
+        # Prefer three-layer pipeline always
+        response = agent.generate_multilayer(user_message)
+        if response and isinstance(response, str) and response.strip():
+            return response
+        # If multi-layer returns empty, fall back
+        raise RuntimeError("Empty multilayer response")
         
     except Exception as e:
         logger.error(f"Error generating chat response for session {session_id}: {str(e)}")
-        
-        # Fallback response
-        if context.get('has_flight_data', False):
-            return f"I can help you analyze your flight data. You have {', '.join(available_types)} available. What specific aspect would you like to know more about?"
-        else:
-            return "Hello! I'm your UAV Log Viewer assistant. Please upload a flight log file first, and then I'll be able to help you with detailed analysis!"
+        # Safe fallback to minimal guidance without leaking details
+        return "I couldn't complete the analysis. Please try rephrasing your question or ensure a flight log is loaded."
 
-def _is_investigative_question(user_message: str) -> bool:
-    """Determine if the user message is an investigative question requiring anomaly analysis"""
-    investigative_keywords = [
-        'anomaly', 'anomalies', 'issue', 'issues', 'problem', 'problems',
-        'error', 'errors', 'warning', 'warnings', 'fault', 'faults',
-        'abnormal', 'unusual', 'strange', 'concerning', 'suspicious',
-        'spot', 'detect', 'find', 'identify', 'check', 'analyze',
-        'gps', 'battery', 'signal', 'loss', 'drop', 'failure',
-        'safety', 'risk', 'danger', 'critical', 'emergency'
-    ]
-    
-    message_lower = user_message.lower()
-    
-    # Check for investigative keywords
-    for keyword in investigative_keywords:
-        if keyword in message_lower:
-            return True
-    
-    # Check for question patterns that suggest investigation
-    investigative_patterns = [
-        'are there any',
-        'can you spot',
-        'what went wrong',
-        'is there a problem',
-        'any issues',
-        'what happened',
-        'why did',
-        'how did',
-        'what caused'
-    ]
-    
-    for pattern in investigative_patterns:
-        if pattern in message_lower:
-            return True
-    
-    return False
-
-def _handle_investigative_question(session_id: str, user_message: str, agent) -> str:
-    """Handle investigative questions using agentic anomaly detection"""
-    try:
-        # Get comprehensive telemetry analysis
-        telemetry_retriever = get_global_telemetry_retriever()
-        
-        # Perform anomaly analysis
-        analysis_result = telemetry_retriever.analyze_flight_anomalies(session_id, user_message)
-        
-        if 'error' in analysis_result:
-            return f"I encountered an issue analyzing the flight data: {analysis_result['error']}"
-        
-        # Get structured telemetry data for LLM analysis
-        structured_data = telemetry_retriever.get_structured_telemetry_data(session_id)
-        
-        if 'error' in structured_data:
-            return f"I couldn't structure the telemetry data: {structured_data['error']}"
-        
-        # Create comprehensive analysis prompt
-        analysis_prompt = _create_agentic_analysis_prompt(
-            user_message, 
-            analysis_result, 
-            structured_data
-        )
-        
-        # Generate response using LLM with comprehensive context
-        raw_response = agent.generate(analysis_prompt)
-        response = clean_llm_response(raw_response)
-        
-        if not response or response.strip() == "":
-            # Fallback to structured analysis
-            return _generate_fallback_analysis(analysis_result, structured_data)
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error handling investigative question: {str(e)}")
-        return f"I encountered an error while analyzing your question: {str(e)}. Please try again or ask a more specific question."
-
-def _create_agentic_analysis_prompt(user_message: str, analysis_result: dict, structured_data: dict) -> str:
-    """Create a comprehensive prompt for agentic analysis with structured output"""
-    
-    prompt = f"""
-You are an expert flight data analyst with specialized knowledge in UAV anomaly detection and safety analysis. You have access to comprehensive flight data analysis and should provide thorough, actionable insights.
-
-USER QUESTION: {user_message}
-
-FLIGHT DATA ANALYSIS SUMMARY:
-- Flight Duration: {analysis_result.get('telemetry_summary', {}).get('flight_duration', 0):.1f} seconds
-- Total Data Points: {analysis_result.get('telemetry_summary', {}).get('total_data_points', 0):,}
-- Parameters Analyzed: {analysis_result.get('telemetry_summary', {}).get('parameters_analyzed', 0)}
-- Anomaly Indicators Found: {analysis_result.get('telemetry_summary', {}).get('anomaly_indicators_count', 0)}
-- Flight Phases Identified: {analysis_result.get('telemetry_summary', {}).get('flight_phases_count', 0)}
-
-STRUCTURED TELEMETRY DATA:
-"""
-    
-    # Add key parameter summaries
-    if 'key_parameters' in structured_data:
-        prompt += "\nKEY PARAMETER STATISTICS:\n"
-        for param, stats in structured_data['key_parameters'].items():
-            prompt += f"""
-{param.upper()}:
-  - Range: {stats['min']:.2f} to {stats['max']:.2f}
-  - Mean: {stats['mean']:.2f} ± {stats['std_dev']:.2f}
-  - Trend: {stats.get('trend', 'unknown')}
-  - Data Points: {stats['data_points']}"""
-    
-    # Add anomaly indicators
-    if 'anomaly_indicators' in analysis_result and analysis_result['anomaly_indicators']:
-        prompt += "\n\nDETECTED ANOMALY INDICATORS:\n"
-        for indicator in analysis_result['anomaly_indicators'][:15]:  # Limit to top 15
-            prompt += f"""
-- {indicator.get('type', 'UNKNOWN').upper()}: {indicator.get('description', 'No description')}
-  Severity: {indicator.get('severity', 'unknown')}, Timestamp: {indicator.get('timestamp', 'unknown')}
-  Confidence: {indicator.get('confidence', 0):.2f}"""
-    
-    # Add flight phases
-    if 'flight_phases' in analysis_result and analysis_result['flight_phases']:
-        prompt += "\n\nFLIGHT PHASES IDENTIFIED:\n"
-        for phase in analysis_result['flight_phases']:
-            prompt += f"""
-- {phase.get('phase', 'UNKNOWN').upper()}: {phase.get('description', 'No description')}
-  Duration: {phase.get('end_time', 0) - phase.get('start_time', 0):.1f}s"""
-    
-    # Add data quality metrics
-    if 'quality_metrics' in structured_data:
-        prompt += f"""
-
-DATA QUALITY METRICS:
-- Total Parameters: {structured_data['quality_metrics'].get('total_parameters', 0)}
-- Parameters with Data: {structured_data['quality_metrics'].get('parameters_with_data', 0)}
-- Data Completeness: {structured_data['quality_metrics'].get('data_completeness', 0):.1%}
-- Temporal Coverage: {structured_data['quality_metrics'].get('temporal_coverage', 0):.1f} seconds"""
-    
-    # Add analysis instructions with structured output format
-    prompt += """
-
-ANALYSIS INSTRUCTIONS:
-You are an expert analyst with access to comprehensive flight data. Use flexible, agentic reasoning to:
-
-1. ANALYZE PATTERNS: Look for correlations, trends, and inconsistencies across parameters
-2. ASSESS SEVERITY: Evaluate the potential impact and urgency of detected issues
-3. IDENTIFY ROOT CAUSES: Consider both technical and operational factors
-4. PROVIDE RECOMMENDATIONS: Offer specific, actionable next steps
-5. CONSIDER CONTEXT: Factor in flight phases, environmental conditions, and mission requirements
-
-RESPONSE FORMAT REQUIREMENTS:
-Structure your response with clear sections, each starting on a new line:
-
-## ANALYSIS SUMMARY
-[Brief overview of findings]
-
-## AVAILABLE DATA
-[What data is available for analysis]
-
-## KEY FINDINGS
-[Specific anomalies, patterns, or issues detected]
-
-## DETAILED ANALYSIS
-[In-depth analysis of findings with evidence]
-
-## RECOMMENDATIONS
-[Specific actionable steps]
-
-## LIMITATIONS
-[What data is missing or unclear]
-
-## NEXT STEPS
-[Suggested follow-up actions or clarifications needed]
-
-Focus on:
-- Specific anomalies and their implications
-- Potential causes and contributing factors
-- Risk assessment and safety implications
-- Recommended investigation steps
-- Areas requiring immediate attention
-
-Provide a comprehensive analysis that addresses the user's question with specific insights from the data. Be thorough but clear, and prioritize safety-critical findings."""
-    
-    return prompt
-
-def _generate_fallback_analysis(analysis_result: dict, structured_data: dict) -> str:
-    """Generate a fallback analysis when LLM fails with structured format"""
-    
-    response = "## ANALYSIS SUMMARY\n"
-    response += "Based on my analysis of your flight data, I have identified several key findings and anomalies.\n\n"
-    
-    # Add available data section
-    response += "## AVAILABLE DATA\n"
-    if 'flight_overview' in structured_data:
-        overview = structured_data['flight_overview']
-        response += f"• Flight Duration: {overview.get('duration_seconds', 0):.1f} seconds\n"
-        response += f"• Total Data Points: {overview.get('total_data_points', 0):,}\n"
-        response += f"• Parameters Available: {overview.get('parameters_available', 0)}\n"
-    
-    if 'quality_metrics' in structured_data:
-        quality = structured_data['quality_metrics']
-        response += f"• Data Completeness: {quality.get('data_completeness', 0):.1%}\n"
-        response += f"• Temporal Coverage: {quality.get('temporal_coverage', 0):.1f} seconds\n"
-    response += "\n"
-    
-    # Add key findings section
-    response += "## KEY FINDINGS\n"
-    if 'anomaly_indicators' in analysis_result and analysis_result['anomaly_indicators']:
-        response += f"Detected {len(analysis_result['anomaly_indicators'])} anomaly indicators:\n"
-        for indicator in analysis_result['anomaly_indicators'][:5]:
-            response += f"• {indicator.get('type', 'Unknown')}: {indicator.get('description', 'No description')} (Severity: {indicator.get('severity', 'unknown')})\n"
-    else:
-        response += "No significant anomalies detected in the available data.\n"
-    response += "\n"
-    
-    # Add detailed analysis section
-    response += "## DETAILED ANALYSIS\n"
-    if 'key_parameters' in structured_data:
-        response += "Key parameter analysis:\n"
-        for param, stats in list(structured_data['key_parameters'].items())[:5]:
-            response += f"• {param}: Range {stats['min']:.2f} to {stats['max']:.2f}, Mean {stats['mean']:.2f} ± {stats['std_dev']:.2f}\n"
-    
-    if 'flight_phases' in structured_data:
-        phases = structured_data['flight_phases']
-        if phases:
-            response += f"\nFlight phases identified: {len(phases)} phases\n"
-            for phase in phases[:3]:
-                response += f"• {phase.get('phase', 'Unknown')}: {phase.get('description', 'No description')}\n"
-    response += "\n"
-    
-    # Add recommendations section with proper paragraph formatting
-    response += "\n\nRecommendations:\n"
-    response += "• Review the detected anomalies for potential safety implications\n"
-    response += "• Analyze specific parameters of interest in more detail\n"
-    response += "• Consider the flight phases and operational context\n"
-    response += "• Investigate any high-severity indicators immediately\n\n"
-    
-    # Add limitations section with proper paragraph formatting
-    response += "Limitations:\n"
-    response += "• This is an automated analysis based on available telemetry data\n"
-    response += "• Some parameters may not be available in the current dataset\n"
-    response += "• Context-specific analysis may require additional information\n\n"
-    
-    # Add next steps section with proper paragraph formatting
-    response += "Next Steps:\n"
-    response += "• Ask specific questions about parameters or anomalies of interest\n"
-    response += "• Request detailed analysis of particular time periods\n"
-    response += "• Inquire about specific flight phases or operational scenarios\n"
-    response += "• Request correlation analysis between different parameters\n"
-    
-    return response
 
 if __name__ == '__main__':
     # Initialize LLM agent on startup

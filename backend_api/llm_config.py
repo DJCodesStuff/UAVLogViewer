@@ -557,10 +557,12 @@ class LangGraphReactAgent:
                     response, 
                     flight_data_available
                 )
+
+                # Ensure we always have a context object for downstream checks
+                context = conversation_manager.get_or_create_context(self.session_id)
                 
                 # Check if clarification is needed (only if response is not comprehensive)
                 if len(response.strip()) > 50:  # Only check if we have a substantial response
-                    context = conversation_manager.get_or_create_context(self.session_id)
                     clarification_request = conversation_manager.should_request_clarification(context)
                     
                     if clarification_request:
@@ -570,7 +572,7 @@ class LangGraphReactAgent:
                         response += f"Options: {', '.join(clarification_request.options)}"
                 
                 # Add proactive suggestions if available with proper paragraph formatting
-                if context.suggested_actions:
+                if context and getattr(context, 'suggested_actions', None):
                     response += f"\n\n💡 Suggestions:\n"
                     for suggestion in context.suggested_actions:
                         response += f"• {suggestion}\n"
@@ -581,6 +583,241 @@ class LangGraphReactAgent:
             
         except Exception as e:
             return f"Error during generation: {str(e)}"
+
+    # =====================
+    # Three-layer Orchestrator
+    # =====================
+    def generate_multilayer(self, user_question: str) -> str:
+        """Three-stage pipeline: gather → analyze (with docs) → compose."""
+        if not isinstance(user_question, str) or not user_question.strip():
+            return "Please provide a question."
+        try:
+            gathered = self._layer1_gather(user_question)
+            analysis = self._layer2_analyze(user_question, gathered)
+            final = self._layer3_compose(user_question, gathered, analysis)
+            return final
+        except Exception as e:
+            return f"Error in multi-layer analysis: {str(e)}"
+
+    def _layer1_gather(self, user_question: str) -> dict:
+        """Gather telemetry summary, structured telemetry, anomaly scan, and RAG context (Qdrant)."""
+        from telemetry_retriever import get_global_telemetry_retriever
+        telemetry_retriever = get_global_telemetry_retriever()
+
+        gathered: Dict[str, Any] = {
+            "question": user_question,
+            "telemetry_summary": {},
+            "structured_telemetry": {},
+            "anomaly_analysis": {},
+            "available_parameters": [],
+            "recent_events": [],
+            "attitude_preview": [],
+            "battery_preview": [],
+            "rc_preview": [],
+            "rag_context": []
+        }
+
+        # Telemetry components (best-effort, resilient)
+        try:
+            gathered["telemetry_summary"] = telemetry_retriever.get_telemetry_summary(self.session_id)
+            if isinstance(gathered["telemetry_summary"], dict):
+                ap = gathered["telemetry_summary"].get("available_parameters")
+                if isinstance(ap, list):
+                    gathered["available_parameters"] = ap
+        except Exception:
+            pass
+        try:
+            gathered["structured_telemetry"] = telemetry_retriever.get_structured_telemetry_data(self.session_id)
+        except Exception:
+            pass
+        try:
+            gathered["anomaly_analysis"] = telemetry_retriever.analyze_flight_anomalies(self.session_id, user_question)
+        except Exception:
+            pass
+
+        # Direct flight_data peeks for previews (avoid large payloads)
+        try:
+            flight_data = telemetry_retriever.get_flight_data(self.session_id) or {}
+            # Recent events (up to 5, newest last)
+            ev = flight_data.get("events")
+            if isinstance(ev, list) and ev:
+                last5 = [e for e in ev[-5:] if isinstance(e, dict)]
+                gathered["recent_events"] = last5
+            # Attitude preview (first 5 points)
+            att = flight_data.get("attitude_series")
+            if isinstance(att, list) and att:
+                gathered["attitude_preview"] = att[:5]
+            # Battery preview from battery_series or events
+            bser = flight_data.get("battery_series")
+            if isinstance(bser, list) and bser:
+                gathered["battery_preview"] = bser[:5]
+            else:
+                bp = []
+                if isinstance(ev, list):
+                    for e in ev:
+                        if isinstance(e, dict) and ("battery_voltage" in e or "temperature" in e):
+                            bp.append({
+                                "timestamp": e.get("timestamp"),
+                                "voltage": e.get("battery_voltage"),
+                                "temperature": e.get("temperature")
+                            })
+                gathered["battery_preview"] = bp[:5]
+            # RC preview
+            rc = flight_data.get("rc_inputs")
+            if isinstance(rc, list) and rc:
+                gathered["rc_preview"] = rc[:5]
+        except Exception:
+            pass
+
+        # RAG search (Qdrant), expanded with heuristic keywords
+        try:
+            base_docs = self.retrieve_documents(user_question, top_k=5) or []
+        except Exception:
+            base_docs = []
+        extra_docs: List[str] = []
+        try:
+            # Derive a few keywords from question and available params
+            terms = []
+            uq = user_question.lower()
+            for t in ["gps", "battery", "rc", "attitude", "altitude", "mode", "temperature", "voltage", "accuracy", "hdop", "vdop"]:
+                if t in uq:
+                    terms.append(t)
+            for t in gathered.get("available_parameters", [])[:5]:
+                if isinstance(t, str):
+                    terms.append(t)
+            terms = list(dict.fromkeys(terms))[:5]
+            for term in terms:
+                try:
+                    docs = self.retrieve_documents(f"{user_question}\nFocus: {term}", top_k=2) or []
+                    extra_docs.extend(docs)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        # Deduplicate documents while preserving order
+        try:
+            seen = set()
+            merged = []
+            for d in base_docs + extra_docs:
+                key = d if isinstance(d, str) else str(d)
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(d)
+            gathered["rag_context"] = merged[:8]
+        except Exception:
+            gathered["rag_context"] = base_docs
+
+        return gathered
+
+    def _layer2_analyze(self, user_question: str, gathered: dict) -> dict:
+        """Correlate signals; consult ArduPilot docs to inform decisions/interpretation."""
+        analysis: Dict[str, Any] = {
+            "key_findings": [],
+            "correlations": [],
+            "doc_notes": "",
+            "takeaways": []
+        }
+
+        # Use anomaly indicators as primary signals if available
+        aa = gathered.get("anomaly_analysis") or {}
+        indicators = aa.get("anomaly_indicators") or []
+        for ind in indicators[:10]:
+            analysis["key_findings"].append({
+                "type": ind.get("type"),
+                "severity": ind.get("severity"),
+                "timestamp": ind.get("timestamp"),
+                "description": ind.get("description")
+            })
+
+        # Simple correlations from structured telemetry stats
+        st = gathered.get("structured_telemetry") or {}
+        kp = st.get("key_parameters") or {}
+        candidate_pairs = [
+            ("gps_alt", "battery_voltage"),
+            ("rc_signal_strength", "gps_alt"),
+            ("gps_accuracy", "rc_signal_strength")
+        ]
+        for a, b in candidate_pairs:
+            if a in kp and b in kp:
+                ta = kp[a].get("trend", "unknown")
+                tb = kp[b].get("trend", "unknown")
+                if ta in ("increasing", "decreasing") and ta == tb:
+                    analysis["correlations"].append({
+                        "pair": [a, b],
+                        "note": f"{a} and {b} trend {ta} together"
+                    })
+
+        # Consult ArduPilot docs in this layer for terminology/units/threshold hints
+        try:
+            from ardupilot_docs import get_global_docs_retriever
+            docs = get_global_docs_retriever()
+            # Heuristic: extract potential terms from question
+            terms = [t for t in ["GPS", "BAT", "ATT", "MODE", "ERR", "RCIN", "RSSI", "HDop", "VDop", "HAcc", "VAcc"] if t.lower() in user_question.lower()]
+            if not terms and analysis["key_findings"]:
+                # try infer from findings
+                for f in analysis["key_findings"]:
+                    t = f.get("type", "")
+                    if isinstance(t, str) and t:
+                        terms.append(t.upper())
+            terms = list(dict.fromkeys(terms))[:3]
+            doc_snips: List[str] = []
+            for term in terms:
+                doc = docs.get_parameter_documentation(term)
+                if doc and isinstance(doc, dict):
+                    desc = doc.get("description", "")
+                    fields = ", ".join(list((doc.get("fields") or {}).keys())[:6])
+                    doc_snips.append(f"{term}: {desc}. Fields: {fields}")
+            if doc_snips:
+                analysis["doc_notes"] = " | ".join(doc_snips)
+        except Exception:
+            pass
+
+        # Takeaway
+        if indicators:
+            analysis["takeaways"].append("Detected anomaly indicators; review highlighted ones.")
+        else:
+            analysis["takeaways"].append("No clear anomalies in available data.")
+
+        return analysis
+
+    def _layer3_compose(self, user_question: str, gathered: dict, analysis: dict) -> str:
+        """Compose final answer via LLM using compacted context and analysis."""
+        ctx_lines: List[str] = []
+        ts = gathered.get("telemetry_summary") or {}
+        if isinstance(ts, dict):
+            ds = ts.get("data_sources") or []
+            if ds:
+                ctx_lines.append("Data sources: " + ", ".join(d.get("type", "?") for d in ds))
+        st = gathered.get("structured_telemetry") or {}
+        if isinstance(st, dict) and "flight_overview" in st:
+            ov = st["flight_overview"]
+            ctx_lines.append(f"Flight overview: ~{ov.get('duration_seconds', 0):.0f}s, points={ov.get('total_data_points', 0)}")
+        aa = gathered.get("anomaly_analysis") or {}
+        tsum = aa.get("telemetry_summary") or {}
+        if tsum:
+            ctx_lines.append(f"Anomaly scan: indicators={tsum.get('anomaly_indicators_count',0)}, phases={tsum.get('flight_phases_count',0)}")
+        if gathered.get("rag_context"):
+            ctx_lines.append(f"RAG matches: {min(len(gathered['rag_context']), 5)}")
+        if analysis.get("doc_notes"):
+            ctx_lines.append("Docs consulted: " + analysis["doc_notes"])
+
+        findings = analysis.get("key_findings") or []
+        correlations = analysis.get("correlations") or []
+
+        prompt = (
+            "You are an expert UAV flight data analyst.\n\n"
+            f"USER QUESTION:\n{user_question}\n\n"
+            "GATHERED CONTEXT:\n" + ("\n".join(f"- {l}" for l in ctx_lines) or "- none") + "\n\n"
+            "KEY FINDINGS:\n" + ("\n".join(f"- {f.get('type','?')}: {f.get('description','')}" for f in findings[:5]) or "- none") + "\n\n"
+            "CORRELATIONS:\n" + ("\n".join(f"- {c['pair'][0]} vs {c['pair'][1]}: {c['note']}" for c in correlations[:3]) or "- none") + "\n\n"
+            "TASK:\n"
+            "Provide a concise answer:\n"
+            "- Start with one-sentence takeaway.\n"
+            "- Add up to 3 short bullets in plain language.\n"
+            "- Include one clear next step.\n"
+        )
+
+        return self.generate(prompt)
     
     def generate_with_rag(self, prompt: str, top_k: int = 3, **kwargs) -> Dict[str, Any]:
         """Generate response with explicit RAG retrieval"""
@@ -721,5 +958,6 @@ class GenAIWrapper(LangGraphReactAgent):
             "document_count": self.document_count,
             "session_documents": len(self.session_documents),
             "rag_enabled": self.enable_rag,
-            "engine_ready": self.rag.rag_engine.bm25 is not None if self.rag else False
+            # Use consolidated status instead of internal engine references
+            "engine_ready": bool(self.rag.get_status().get("engine_ready", False)) if self.rag else False
         }
