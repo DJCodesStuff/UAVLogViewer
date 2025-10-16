@@ -1,25 +1,26 @@
 # UAV Log Viewer Backend API
 
-A comprehensive Flask-based REST API that provides intelligent chat functionality for the UAV Log Viewer frontend. The backend features AI-powered responses using Google Gemini, session-based RAG (Retrieval Augmented Generation), smart vector database management, and modular architecture for scalable UAV flight data analysis.
+A Flask-based REST API powering the UAV Log Viewer with AI-assisted analysis, session-scoped RAG (Qdrant), and modular telemetry tooling for MAVLink/Dataflash/DJI logs. It supports multi-session chat, telemetry ingestion, anomaly detection, and tool-augmented LLM reasoning using a three-layer pipeline.
 
 ## 🚀 Features
 
 ### Core Functionality
-- **Multi-Session Support**: Handle multiple users simultaneously with unique session IDs
-- **AI-Powered Chat**: Google Gemini LLM integration for intelligent, context-aware responses
-- **Flight Data Integration**: Store and analyze flight data from uploaded log files
-- **Session-Based RAG**: Each chat session maintains its own document collection
-- **Smart Vector Database**: Automatic collection lifecycle management with cleanup
-- **Text Sanitization**: Clean, plain text output without special characters
-- **Modular Architecture**: Extensible design for future enhancements
+- **Multi-Session Support**: Concurrent sessions using `X-Session-ID`
+- **AI-Powered Chat**: Gemini LLM via LangGraph agent (tools + memory)
+- **Flight Data Ingestion**: Store parsed telemetry for analysis
+- **Session-Based RAG (Qdrant)**: Per-session document collections
+- **Vector DB Lifecycle**: TTL and cleanup for collections
+- **Sanitized, Plain Output**: Text-only responses safe for UI
+- **Modular Back-End**: Pluggable analyzers and retrievers
 
 ### Advanced Features
-- **LangGraph React Agent**: Implements ReAct pattern for intelligent tool usage
-- **Flexible System Prompts**: Switch between different AI personalities
-- **Automatic Cleanup**: Smart memory management with configurable TTL
-- **Persistent Storage**: Collections saved to disk and restored on restart
-- **Comprehensive API**: Full CRUD operations for collections and sessions
-- **Health Monitoring**: System statistics and health checks
+- **Three-Layer Agent Pipeline**: gather → analyze → compose
+- **LangGraph ReAct Agent**: Tool use (RAG, docs, telemetry, anomaly)
+- **Dynamic Telemetry Retriever**: Parameter-aware queries and summaries
+- **Anomaly Detector**: Time-series stats, thresholds, and indicators
+- **Configurable Prompts**: Swap system prompts at runtime
+- **RAG Local Exports Disabled**: No `rag_exports` writes (Qdrant only)
+- **Health & Stats Endpoints**: Visibility into system state
 
 ## 📋 Table of Contents
 
@@ -66,23 +67,18 @@ The API will start on `http://localhost:8000`
 
 ## ⚙️ Configuration
 
-### Environment Variables
+Refer the env.example in the backend_api directory.
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `GOOGLE_API_KEY` | Google Gemini API key | - | ✅ |
-| `GOOGLE_MODEL_NAME` | Gemini model name | `gemini-pro` | ❌ |
-| `SYSTEM_PROMPT` | Default system prompt | ArduPilot analyst | ❌ |
-| `API_HOST` | API host address | `0.0.0.0` | ❌ |
-| `API_PORT` | API port | `8000` | ❌ |
 
 ### Vector Database Settings
 
-Qdrant is mandatory. Set these environment variables:
+Qdrant is mandatory (no local fallback). Set:
 
 ```
 QDRANT_URL=<your_qdrant_url>
-QDRANT_API_KEY=<your_api_key>
+QDRANT_API_KEY=<your_qdrant_api_key>
+QDRANT_VECTOR_SIZE=768            # optional, default 768
+GOOGLE_EMBEDDING_MODEL=text-embedding-004
 ```
 
 ## 🔧 Maintenance
@@ -129,7 +125,7 @@ Send messages to the AI chat interface.
 #### 2. Flight Data Storage
 **POST** `/api/flight-data`
 
-Store flight data for a session (called by frontend when log is processed).
+Store flight data for a session (frontend calls after parsing logs). Incoming payloads are normalized server-side so legacy shapes still work.
 
 **Headers:**
 - `X-Session-ID`: Unique session identifier
@@ -212,7 +208,7 @@ Get information about all active sessions.
 #### 5. List RAG Collections
 **GET** `/api/rag/collections`
 
-List all vector database collections.
+List session collections in Qdrant.
 
 **Response:**
 ```json
@@ -372,41 +368,44 @@ Switch system prompt for a specific session.
 ### System Components
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    UAV Log Viewer Backend                   │
-├─────────────────────────────────────────────────────────────┤
-│  Flask API Server (app.py)                                 │
-│  ├── Session Manager                                        │
-│  ├── Chat Endpoints                                         │
-│  └── RAG Management Endpoints                               │
-├─────────────────────────────────────────────────────────────┤
-│  LangGraph React Agent (llm_config.py)                     │
-│  ├── Google Gemini Integration                              │
-│  ├── ReAct Pattern Implementation                           │
-│  └── Tool Integration                                       │
-├─────────────────────────────────────────────────────────────┤
-│  Modular RAG System (in_memory_rag.py)                     │
-│  ├── Session-Based Collections                              │
-│  ├── BM25 Search Engine                                     │
-│  └── Document Management                                    │
-├─────────────────────────────────────────────────────────────┤
-│  Smart Vector DB Manager (vector_db_manager.py)            │
-│  ├── Collection Lifecycle Management                        │
-│  ├── Automatic Cleanup                                      │
-│  └── Persistent Storage                                     │
-├─────────────────────────────────────────────────────────────┤
-│  Text Processing (text_utils.py)                           │
-│  ├── Text Sanitization                                      │
-│  ├── Special Character Filtering                            │
-│  └── Flight Data Formatting                                 │
-└─────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                    UAV Log Viewer Backend                  │
+├────────────────────────────────────────────────────────────┤
+│  Flask API (app.py)                                       │
+│  ├─ Session Manager                                       │
+│  ├─ Chat / Telemetry / Anomaly / RAG Endpoints            │
+│  └─ Flight Data Normalization (params/events/attitude)    │
+├────────────────────────────────────────────────────────────┤
+│  LangGraph Agent (llm_config.py)                          │
+│  ├─ Three-Layer Pipeline (gather/analyze/compose)         │
+│  ├─ Tools: RAG, ArduPilot docs, telemetry, anomalies      │
+│  └─ Memory + tool-augmented LLM                           │
+├────────────────────────────────────────────────────────────┤
+│  RAG Manager (rag_manager.py)                             │
+│  ├─ Qdrant collections (per-session)                      │
+│  ├─ Embeddings via Google (text-embedding-004)            │
+│  └─ Cleanup / stats                                       │
+├────────────────────────────────────────────────────────────┤
+│  Telemetry (telemetry_retriever.py)                       │
+│  ├─ Parameter queries (GPS, RC, BAT, ALT, MODE, …)        │
+│  ├─ Structured telemetry + summaries                      │
+│  └─ Attitude series + availability                        │
+├────────────────────────────────────────────────────────────┤
+│  Anomalies (flight_anomaly_detector.py)                    │
+│  ├─ Stats, trends, thresholds, indicators                 │
+│  └─ Flight phases + quality metrics                       │
+├────────────────────────────────────────────────────────────┤
+│  Text Utils (text_utils.py)                                │
+│  ├─ Clean/sanitize LLM output                             │
+│  └─ Descriptive RAG doc formatting (GPS/battery/errors)   │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ### Data Flow
 
 1. **Flight Data Upload**
    ```
-   Frontend → POST /api/flight-data → Session Manager → RAG System → Vector DB
+   Frontend → POST /api/flight-data → Session Manager (normalize) → RAG Manager → Qdrant
    ```
 
 2. **Chat Interaction**
@@ -418,6 +417,9 @@ Switch system prompt for a specific session.
    ```
    User Query → RAG Search → Relevant Documents → Context Enhancement → AI Response
    ```
+
+4. **Local Exports**
+   - Disabled by default (no `rag_exports` writes).
 
 ### Session Management
 
@@ -587,6 +589,13 @@ echo "GOOGLE_API_KEY=your_api_key_here" > .env
 pip install -r requirements.txt
 ```
 
+If RAG connectivity fails:
+```bash
+export QDRANT_URL=https://<your-qdrant-url>
+export QDRANT_API_KEY=<your_api_key>
+python -c "from rag_manager import get_global_rag_manager; print(get_global_rag_manager().get_manager_stats())"
+```
+
 #### 3. Port Already in Use
 **Error**: `Address already in use`
 
@@ -642,23 +651,29 @@ The API expects flight data in the following format:
 
 ```json
 {
-    "vehicle": "Copter|Plane|Rover|Tracker",
-    "trajectories": {
-        "GPS": {
-            "trajectory": [[lon, lat, alt, time], ...],
-            "timeTrajectory": {time: [lon, lat, alt, time], ...}
-        }
-    },
-    "flightModeChanges": [[time, mode], ...],
-    "events": [[time, event], ...],
-    "mission": [...],
-    "params": {...},
-    "metadata": {
-        "startTime": "2024-01-01T12:00:00"
-    },
-    "timeAttitude": {...},
-    "fences": [...],
-    "logType": "tlog|bin|dji"
+  "vehicle": "Copter|Plane|Rover|Tracker",
+  "trajectories": {
+    "GPS": {
+      "trajectory": [[lon, lat, alt, time], ...],
+      "timeTrajectory": {time: [lon, lat, alt, time], ...}
+    }
+  },
+  "gps_metadata": {
+    "status_changes": [{timestamp, status, fix_type}],
+    "satellite_counts": [int, ...],
+    "signal_quality": [{timestamp, hdop, vdop}],
+    "accuracy_metrics": [{timestamp, hacc, vacc, sacc}]
+  },
+  "attitude_series": [{timestamp, roll, pitch, yaw}, ...],
+  "battery_series": [{timestamp, voltage, current, remaining, temperature}, ...],
+  "rc_inputs": [{timestamp, signal_strength, signal_lost}, ...],
+  "flightModeChanges": [[time, mode], ...],
+  "events": [{timestamp, type, message, severity, ...}, ...],
+  "mission": [...],
+  "params": { NAME: value, ... },
+  "metadata": { "startTime": "2024-01-01T12:00:00" },
+  "fences": [...],
+  "logType": "tlog|bin|dji"
 }
 ```
 
@@ -669,6 +684,7 @@ The chat interface can respond to queries about:
 - **GPS & Trajectory**: Flight path analysis, altitude profiles, speed analysis
 - **Flight Modes**: Mode changes, transitions, and patterns
 - **Events**: System events, errors, warnings, and milestones
+- **Error Logs**: STATUSTEXT timelines and error/warn extraction
 - **Mission Data**: Waypoints, commands, mission progress, and completion
 - **Parameters**: Vehicle configuration, settings, and calibration
 - **Attitude Data**: Roll, pitch, yaw analysis and stability
