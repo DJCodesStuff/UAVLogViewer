@@ -17,7 +17,6 @@ A comprehensive JavaScript-based log viewer for MAVLink telemetry and dataflash 
 
 ### Backend (Flask + AI)
 - **AI-Powered Analysis**: Google Gemini LLM integration for intelligent responses
-- **Flight Anomaly Detection**: Advanced pattern recognition and anomaly detection
 - **Session-Based RAG**: Retrieval Augmented Generation for context-aware responses
 - **Vector Database**: Qdrant integration for scalable document storage
 - **Multi-Session Support**: Handle multiple users simultaneously
@@ -125,21 +124,50 @@ pip install -r requirements.txt
 ```
 
 ### Configuration
-Create a `.env` file in the `backend_api` directory:
+The backend includes a reference environment file (`env.example`) with all available configuration options.
 
+**Quick Setup:**
 ```bash
-# Required
+cd backend_api
+
+# Copy the reference environment file
+cp env.example .env
+
+# Edit the .env file with your configuration
+nano .env  # or use your preferred editor
+```
+
+**Required Configuration:**
+```bash
+# Required - Google Gemini API
 GOOGLE_API_KEY=your_google_gemini_api_key
 GOOGLE_MODEL_NAME=gemini-2.0-flash
 
-# Optional - Qdrant Vector Database
-QUADRANT_URL=https://your-qdrant-url:6333
-QUADRANT_API_KEY=your_qdrant_api_key
+# Required - Qdrant Vector Database (for RAG functionality)
+QDRANT_URL=https://your-qdrant-url:6333
+QDRANT_API_KEY=your_qdrant_api_key
+```
 
-# Optional - System Configuration
+**Optional Configuration:**
+```bash
+# API Settings
 API_HOST=0.0.0.0
 API_PORT=8000
+API_DEBUG=True
+
+# CORS Settings (for frontend integration)
+CORS_ORIGINS=http://localhost:8080,http://0.0.0.0:8080
+
+# Session Settings
+SESSION_TIMEOUT_HOURS=24
+MAX_SESSIONS=100
+
+# Logging
+LOG_LEVEL=INFO
 ```
+
+**Environment File Reference:**
+The `backend_api/env.example` file contains all available configuration options with descriptions. Copy this file to `.env` and customize the values for your deployment.
 
 ### Start Backend
 ```bash
@@ -149,6 +177,31 @@ python app.py
 # With conda environment
 conda activate arena
 python app.py
+
+# Alternative: Use the start script
+python start_api.py
+```
+
+### Backend Deployment Options
+
+#### Option 1: Direct Python Deployment
+```bash
+cd backend_api
+python app.py
+```
+
+#### Option 2: Production Deployment with Gunicorn
+```bash
+cd backend_api
+
+# Install gunicorn
+pip install gunicorn
+
+# Run with gunicorn (production)
+gunicorn -w 4 -b 0.0.0.0:8000 app:app
+
+# Run with gunicorn (development)
+gunicorn -w 1 -b 0.0.0.0:8000 --reload app:app
 ```
 
 ## 🔌 API Usage
@@ -173,13 +226,6 @@ curl -X POST http://localhost:8000/api/flight-data \
   -d @flight_data.json
 ```
 
-#### Anomaly Detection
-```bash
-# Analyze flight anomalies
-curl -X POST http://localhost:8000/api/anomaly/your-session-id/analyze \
-  -H "Content-Type: application/json" \
-  -d '{"question": "Are there any anomalies in this flight?"}'
-```
 
 ### Python Client Example
 ```python
@@ -213,13 +259,6 @@ chat_response = requests.post(
 
 print(chat_response.json()['message'])
 
-# Analyze anomalies
-anomaly_response = requests.post(
-    f"http://localhost:8000/api/anomaly/{session_id}/analyze",
-    json={"question": "Are there any anomalies?"}
-)
-
-print(anomaly_response.json())
 ```
 
 ### JavaScript/Frontend Integration
@@ -253,17 +292,6 @@ async function chatWithAI(message) {
     return await response.json();
 }
 
-// Analyze anomalies
-async function analyzeAnomalies(question) {
-    const response = await fetch(`/api/anomaly/${sessionId}/analyze`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ question })
-    });
-    return await response.json();
-}
 ```
 
 ## 🧪 Testing
@@ -285,7 +313,6 @@ python test_complete.py --skip-agent    # Skip LangGraph agent tests
 - ✅ **Session Management**: Multi-session handling
 - ✅ **RAG Functionality**: Document storage and retrieval
 - ✅ **AI Integration**: Gemini API responses
-- ✅ **Anomaly Detection**: Flight data analysis
 - ✅ **Error Handling**: Graceful failure handling
 - ✅ **Performance**: Response time monitoring
 
@@ -326,6 +353,8 @@ docker run -e VUE_APP_CESIUM_TOKEN=<your-token> \
 ```
 
 ### Docker Compose
+Create a `docker-compose.yml` file in the project root:
+
 ```yaml
 version: '3.8'
 services:
@@ -336,6 +365,8 @@ services:
     environment:
       - VUE_APP_CESIUM_TOKEN=${CESIUM_TOKEN}
       - VUE_APP_API_URL=http://backend:8000
+    depends_on:
+      - backend
   
   backend:
     build: ./backend_api
@@ -343,25 +374,36 @@ services:
       - "8000:8000"
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - QUADRANT_URL=${QUADRANT_URL}
-      - QUADRANT_API_KEY=${QUADRANT_API_KEY}
+      - GOOGLE_MODEL_NAME=${GOOGLE_MODEL_NAME:-gemini-2.0-flash}
+      - QDRANT_URL=${QDRANT_URL}
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - CORS_ORIGINS=http://frontend:8080,http://localhost:8080
+    volumes:
+      - ./backend_api/.env:/app/.env:ro  # Mount environment file
+```
+
+**Environment Variables for Docker Compose:**
+Create a `.env` file in the project root with:
+```bash
+# Frontend
+CESIUM_TOKEN=your_cesium_ion_token
+
+# Backend
+GOOGLE_API_KEY=your_google_gemini_api_key
+GOOGLE_MODEL_NAME=gemini-2.0-flash
+QDRANT_URL=https://your-qdrant-url:6333
+QDRANT_API_KEY=your_qdrant_api_key
 ```
 
 ## 📚 Documentation
 
 ### Comprehensive Documentation
 - **[Complete Backend Documentation](backend_api/README_COMPREHENSIVE.md)** - Full API reference and usage guide
-- **[Anomaly Detection System](backend_api/README_ANOMALY_DETECTION.md)** - Flight anomaly detection capabilities
 - **[Collection Management](backend_api/README_CLEANUP_SCRIPTS.md)** - Vector database management scripts
 
 ### Key Features Documentation
-
-#### Flight Anomaly Detection
-The system provides intelligent analysis of flight data to identify:
-- **Sudden Changes**: Rapid altitude, velocity, or battery changes
-- **Threshold Violations**: Battery voltage, temperature, altitude limits
-- **Pattern Anomalies**: Unusual variance and correlations
-- **Flight Phase Analysis**: Takeoff, cruise, landing patterns
 
 #### AI Capabilities
 - **Natural Language Queries**: Ask questions about flight data in plain English
@@ -374,6 +416,21 @@ The system provides intelligent analysis of flight data to identify:
 - **Local Fallback**: Automatic fallback to local storage
 - **Session Isolation**: Each chat session has its own collection
 - **Automatic Cleanup**: Smart memory management
+
+## 🚧 Features in Development
+
+### Flight Anomaly Detection (Work in Progress)
+The system is being enhanced with intelligent flight data analysis capabilities:
+
+- **Sudden Changes Detection**: Identify rapid altitude, velocity, or battery changes
+- **Threshold Violations**: Monitor battery voltage, temperature, altitude limits
+- **Pattern Anomalies**: Detect unusual variance and correlations in flight data
+- **Flight Phase Analysis**: Automatic detection of takeoff, cruise, and landing phases
+- **GPS Signal Analysis**: Monitor GPS signal quality, satellite count, and accuracy
+- **Battery Health Monitoring**: Track voltage drops, temperature issues, and power consumption
+- **RC Signal Monitoring**: Detect signal loss and strength degradation
+
+**Status**: Core anomaly detection algorithms are implemented and functional, with ongoing refinement of detection patterns and integration with the AI analysis system.
 
 ## 🔧 Troubleshooting
 
@@ -397,12 +454,22 @@ echo $VUE_APP_CESIUM_TOKEN
 # Check environment variables
 cat backend_api/.env
 
+# Verify the reference environment file exists
+ls -la backend_api/env.example
+
+# Copy reference file if .env doesn't exist
+cp backend_api/env.example backend_api/.env
+
 # Verify API key
 curl -H "Authorization: Bearer $GOOGLE_API_KEY" \
      https://generativelanguage.googleapis.com/v1/models
 
 # Check backend health
 curl http://localhost:8000/api/health
+
+# Check if all required environment variables are set
+cd backend_api
+python -c "import os; from dotenv import load_dotenv; load_dotenv(); print('GOOGLE_API_KEY:', 'SET' if os.getenv('GOOGLE_API_KEY') else 'MISSING'); print('QDRANT_URL:', 'SET' if os.getenv('QDRANT_URL') else 'MISSING')"
 ```
 
 #### Database Issues

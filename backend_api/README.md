@@ -69,7 +69,6 @@ The API will start on `http://localhost:8000`
 
 Refer the env.example in the backend_api directory.
 
-
 ### Vector Database Settings
 
 Qdrant is mandatory (no local fallback). Set:
