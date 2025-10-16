@@ -2,7 +2,6 @@
     <div class="chat-window" :style="{ height: windowHeight + 'px' }">
         <!-- Resize handle -->
         <div class="resize-handle resize-handle-bottom" @mousedown="startResize('bottom')"></div>
-        
         <div class="chat-header">
             <h5><i class="fas fa-comments"></i> Chat</h5>
             <div class="session-info">
@@ -199,19 +198,42 @@ export default {
             if (this.flightDataSent || !this.state.processDone) return
 
             try {
-                // Prepare flight data from the global state
+                // Prepare flight data from the global state (send all relevant data fields)
                 const flightData = {
+                    // Core
                     vehicle: this.state.vehicle,
+                    logType: this.state.logType,
+                    file: this.state.file,
+                    metadata: this.state.metadata,
+                    params: this.state.params,
+                    defaultParams: this.state.defaultParams,
+                    // Trajectories and attitude
                     trajectories: this.state.trajectories,
+                    timeTrajectory: this.state.timeTrajectory,
+                    timeAttitude: this.state.timeAttitude,
+                    timeAttitudeQ: this.state.timeAttitudeQ,
+                    trajectorySource: this.state.trajectorySource,
+                    trajectorySources: this.state.trajectorySources,
+                    attitudeSources: this.state.attitudeSources,
+                    attitudeSource: this.state.attitudeSource,
+                    // Mission and events
+                    mission: this.state.mission,
                     flightModeChanges: this.state.flightModeChanges,
                     events: this.state.events,
-                    mission: this.state.mission,
-                    params: this.state.params,
-                    metadata: this.state.metadata,
-                    timeAttitude: this.state.timeAttitude,
                     fences: this.state.fences,
-                    logType: this.state.logType,
-                    file: this.state.file
+                    // Additional time/context
+                    currentTime: this.state.currentTime,
+                    timeRange: this.state.timeRange,
+                    // Derived/text data
+                    textMessages: this.state.textMessages,
+                    namedFloats: this.state.namedFloats,
+                    // Caching and misc
+                    plotCache: this.state.plotCache,
+                    commit: this.state.commit,
+                    buildDate: this.state.buildDate,
+                    // Processing status (useful context)
+                    processStatus: this.state.processStatus,
+                    processPercentage: this.state.processPercentage
                 }
 
                 const API_BASE_URL = 'http://localhost:8000/api'

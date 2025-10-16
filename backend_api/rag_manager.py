@@ -1,35 +1,29 @@
-# rag_manager.py - Consolidated RAG Manager with Quadrant Integration
+"""
+rag_manager.py - RAG Manager with mandatory Qdrant integration
+
+This module mandates Qdrant as the vector storage. All previous local
+storage/BM25 fallback logic has been removed to simplify behavior and
+avoid divergent code paths.
+"""
 
 import os
-import json
 import uuid
 import logging
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from enum import Enum
-import re
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Try to import Qdrant client, fall back to local storage if not available
-try:
-    from qdrant_client import QdrantClient
-    from qdrant_client.models import Distance, VectorParams, PointStruct
-    QDRANT_AVAILABLE = True
-except ImportError:
-    QDRANT_AVAILABLE = False
-    logging.warning("Qdrant client not available, using local storage")
+# Mandatory Qdrant client
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct
 
-# Fallback to BM25 for local storage
-try:
-    from rank_bm25 import BM25Okapi
-    BM25_AVAILABLE = True
-except ImportError:
-    BM25_AVAILABLE = False
-    logging.warning("BM25 not available, using simple text search")
+# Embeddings (Google Generative AI)
+import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
@@ -59,117 +53,57 @@ class CollectionMetadata:
 
 class ConsolidatedRAGManager:
     """
-    Consolidated RAG Manager with Quadrant integration and fallback to local storage.
+    RAG Manager with mandatory Qdrant integration.
     Features:
-    - Quadrant vector database integration
+    - Qdrant vector database integration (required)
     - Session-based collections
     - Automatic cleanup of old collections
-    - Smart memory management
     - Collection metadata tracking
-    - Internet search capabilities
     """
     
     def __init__(self, 
                  max_collections: int = 50,
                  collection_ttl_hours: int = 24,
                  auto_cleanup: bool = True,
-                 storage_path: str = "./vector_storage",
                  quadrant_url: Optional[str] = None,
                  quadrant_api_key: Optional[str] = None):
         
         self.max_collections = max_collections
         self.collection_ttl_hours = collection_ttl_hours
         self.auto_cleanup = auto_cleanup
-        self.storage_path = storage_path
+        # Initialize Qdrant (mandatory)
+        qdrant_url = quadrant_url or os.getenv("QDRANT_URL")
+        qdrant_api_key = quadrant_api_key or os.getenv("QDRANT_API_KEY")
+
+        if not qdrant_url or not qdrant_api_key:
+            raise RuntimeError(
+                "Qdrant is required. Please set QDRANT_URL and QDRANT_API_KEY environment variables."
+            )
+
+        try:
+            self.qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+            logger.info("Qdrant client initialized successfully")
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Qdrant: {e}") from e
         
-        # Initialize Qdrant if available
-        self.qdrant_client = None
-        self.use_qdrant = False
-        
-        # Get configuration from environment variables or parameters
-        qdrant_url = quadrant_url or os.getenv("QUADRANT_URL")
-        qdrant_api_key = quadrant_api_key or os.getenv("QUADRANT_API_KEY")
-        
-        if QDRANT_AVAILABLE and qdrant_url and qdrant_api_key:
-            try:
-                self.qdrant_client = QdrantClient(
-                    url=qdrant_url,
-                    api_key=qdrant_api_key
-                )
-                self.use_qdrant = True
-                logger.info("Qdrant client initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize Qdrant: {e}")
-                self.use_qdrant = False
-        else:
-            logger.info("Qdrant not configured, using local storage")
-        
-        # In-memory storage for collections (fallback)
-        self.collections: Dict[str, Dict[str, Any]] = {}
+        # In-memory metadata for collections
         self.collection_metadata: Dict[str, CollectionMetadata] = {}
         
-        # Ensure storage directory exists
-        os.makedirs(storage_path, exist_ok=True)
-        
-        # Load existing collections if any
-        self._load_collections()
-        
-        logger.info(f"RAG Manager initialized with {len(self.collections)} collections")
-        logger.info(f"Using {'Qdrant' if self.use_qdrant else 'Local storage'}")
+        # Embedding configuration
+        self.embedding_model = os.getenv("GOOGLE_EMBEDDING_MODEL", "text-embedding-004")
+        self.vector_size = int(os.getenv("QDRANT_VECTOR_SIZE", "768"))
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            logger.warning("GOOGLE_API_KEY not set; embeddings will fail.")
+        else:
+            try:
+                genai.configure(api_key=api_key)
+            except Exception as e:
+                logger.warning(f"Failed to configure Generative AI embeddings: {e}")
+
+        logger.info("RAG Manager initialized using Qdrant")
     
-    def _load_collections(self):
-        """Load existing collections from storage"""
-        try:
-            metadata_file = os.path.join(self.storage_path, "collections_metadata.json")
-            if os.path.exists(metadata_file):
-                with open(metadata_file, 'r') as f:
-                    metadata_dict = json.load(f)
-                
-                for collection_id, meta_dict in metadata_dict.items():
-                    # Convert datetime strings back to datetime objects
-                    meta_dict['created_at'] = datetime.fromisoformat(meta_dict['created_at'])
-                    meta_dict['last_accessed'] = datetime.fromisoformat(meta_dict['last_accessed'])
-                    meta_dict['status'] = CollectionStatus(meta_dict['status'])
-                    
-                    self.collection_metadata[collection_id] = CollectionMetadata(**meta_dict)
-                    
-                    # Load collection data if it exists
-                    collection_file = os.path.join(self.storage_path, f"{collection_id}.json")
-                    if os.path.exists(collection_file):
-                        with open(collection_file, 'r') as f:
-                            self.collections[collection_id] = json.load(f)
-                
-                logger.info(f"Loaded {len(self.collection_metadata)} collections from storage")
-        except Exception as e:
-            logger.error(f"Error loading collections: {e}")
-    
-    def _save_collections(self):
-        """Save collections to storage"""
-        try:
-            # Save metadata
-            metadata_file = os.path.join(self.storage_path, "collections_metadata.json")
-            metadata_dict = {}
-            
-            for collection_id, metadata in self.collection_metadata.items():
-                meta_dict = asdict(metadata)
-                # Convert datetime objects to strings
-                meta_dict['created_at'] = metadata.created_at.isoformat()
-                meta_dict['last_accessed'] = metadata.last_accessed.isoformat()
-                meta_dict['status'] = metadata.status.value
-                metadata_dict[collection_id] = meta_dict
-            
-            with open(metadata_file, 'w') as f:
-                json.dump(metadata_dict, f, indent=2)
-            
-            # Save collection data
-            for collection_id, collection_data in self.collections.items():
-                collection_file = os.path.join(self.storage_path, f"{collection_id}.json")
-                with open(collection_file, 'w') as f:
-                    json.dump(collection_data, f, indent=2)
-            
-            logger.debug("Collections saved to storage")
-        except Exception as e:
-            logger.error(f"Error saving collections: {e}")
+    # All on-disk local storage logic has been removed; metadata is kept in-memory only.
     
     def create_collection(self, 
                          session_id: str, 
@@ -187,10 +121,13 @@ class ConsolidatedRAGManager:
         collection_id = str(uuid.uuid4())
         
         # Create collection metadata
+        # Make collection name unique and human-readable
+        unique_name = (name or f"Session_{session_id[:8]}") + f"_{collection_id[:8]}"
+        
         metadata = CollectionMetadata(
             collection_id=collection_id,
             session_id=session_id,
-            name=name or f"Session_{session_id[:8]}",
+            name=unique_name,
             created_at=datetime.now(),
             last_accessed=datetime.now(),
             document_count=0,
@@ -199,36 +136,21 @@ class ConsolidatedRAGManager:
             tags=tags or []
         )
         
-        # Initialize collection
-        if self.use_qdrant:
-            try:
-                # Create Qdrant collection
-                self.qdrant_client.create_collection(
-                    collection_name=metadata.name,
-                    vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-                    metadata={"session_id": session_id, "collection_id": collection_id}
-                )
-                logger.info(f"Created Qdrant collection: {metadata.name}")
-            except Exception as e:
-                logger.error(f"Failed to create Quadrant collection: {e}")
-                self.use_qdrant = False
-        
-        if not self.use_qdrant:
-            # Initialize local collection
-            self.collections[collection_id] = {
-                "documents": [],
-                "embeddings": [],
-                "metadata": []
-            }
+        # Create Qdrant collection
+        try:
+            self.qdrant_client.create_collection(
+                collection_name=metadata.name,
+                vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE)
+            )
+            logger.info(f"Created Qdrant collection: {metadata.name}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to create Qdrant collection: {e}") from e
         
         self.collection_metadata[collection_id] = metadata
         
         # Auto-cleanup if needed
         if self.auto_cleanup:
             self._cleanup_old_collections()
-        
-        # Save to storage
-        self._save_collections()
         
         logger.info(f"Created collection {collection_id} for session {session_id}")
         return collection_id
@@ -259,63 +181,40 @@ class ConsolidatedRAGManager:
         """Add documents to a session's collection"""
         collection_id = self.get_or_create_collection(session_id)
         
-        if self.use_qdrant:
-            try:
-                # Add documents to Quadrant
-                for i, doc in enumerate(documents):
-                    doc_metadata = metadata_list[i] if metadata_list and i < len(metadata_list) else {}
-                    doc_metadata.update({
-                        "session_id": session_id,
-                        "collection_id": collection_id,
-                        "added_at": datetime.now().isoformat(),
-                        "document_id": str(uuid.uuid4())
-                    })
-                    
-                    # For now, we'll use local storage for documents
-                    # Qdrant integration for document storage would require embedding generation
-                    # which is beyond the scope of this basic implementation
-                    pass
-                
-                # Update collection metadata
-                collection_metadata = self.collection_metadata[collection_id]
-                collection_metadata.document_count += len(documents)
-                collection_metadata.last_accessed = datetime.now()
-                
-                logger.info(f"Added {len(documents)} documents to Quadrant collection {collection_id}")
-                return f"Added {len(documents)} documents to Quadrant collection {collection_id}. Total documents: {collection_metadata.document_count}"
-                
-            except Exception as e:
-                logger.error(f"Failed to add documents to Quadrant: {e}")
-                # Fall back to local storage
-                self.use_qdrant = False
-        
-        # Local storage fallback
-        if collection_id not in self.collections:
-            return f"Collection {collection_id} not found"
-        
-        collection = self.collections[collection_id]
-        collection_metadata = self.collection_metadata[collection_id]
-        
-        # Add documents
-        for i, doc in enumerate(documents):
-            doc_metadata = metadata_list[i] if metadata_list and i < len(metadata_list) else {}
-            doc_metadata.update({
+        # Generate embeddings
+        try:
+            embeddings = self._embed_texts(documents)
+            if not embeddings or len(embeddings) != len(documents):
+                raise RuntimeError("Embedding generation failed or returned mismatched sizes")
+        except Exception as e:
+            logger.error(f"Embedding error: {e}")
+            return f"Error embedding documents: {e}"
+
+        # Prepare upsert points
+        points: List[PointStruct] = []
+        for i, (text, vector) in enumerate(zip(documents, embeddings)):
+            payload = metadata_list[i] if metadata_list and i < len(metadata_list) else {}
+            payload.update({
+                "session_id": session_id,
+                "text": text,
                 "added_at": datetime.now().isoformat(),
-                "document_id": str(uuid.uuid4())
             })
-            
-            collection["documents"].append(doc)
-            collection["metadata"].append(doc_metadata)
-        
-        # Update collection metadata
-        collection_metadata.document_count = len(collection["documents"])
+            points.append(PointStruct(id=str(uuid.uuid4()), vector=vector, payload=payload))
+
+        # Upsert into Qdrant
+        try:
+            collection_name = self.collection_metadata[collection_id].name
+            self.qdrant_client.upsert(collection_name=collection_name, points=points)
+        except Exception as e:
+            logger.error(f"Qdrant upsert failed: {e}")
+            return f"Error storing documents: {e}"
+
+        # Update metadata
+        collection_metadata = self.collection_metadata[collection_id]
+        collection_metadata.document_count += len(documents)
         collection_metadata.last_accessed = datetime.now()
-        
-        # Save changes
-        self._save_collections()
-        
-        logger.info(f"Added {len(documents)} documents to local collection {collection_id}")
-        return f"Added {len(documents)} documents to local collection {collection_id}. Total documents: {collection_metadata.document_count}"
+        logger.info(f"Added {len(documents)} documents to Qdrant collection {collection_name}")
+        return f"Added {len(documents)} documents. Total: {collection_metadata.document_count}"
     
     def search_documents(self, 
                         session_id: str, 
@@ -331,46 +230,62 @@ class ConsolidatedRAGManager:
         # Update last accessed time
         collection_metadata.last_accessed = datetime.now()
         
-        if self.use_qdrant:
-            try:
-                # Search in Qdrant (placeholder - would need embedding generation)
-                # For now, fall back to local search
-                results = []
-                
-                # Convert Qdrant results to our format (placeholder)
-                formatted_results = []
-                # For now, return empty results and fall back to local search
-                logger.info(f"Qdrant search placeholder - falling back to local search for session {session_id}")
-                return formatted_results
-                
-            except Exception as e:
-                logger.error(f"Failed to search in Quadrant: {e}")
-                # Fall back to local search
-                self.use_qdrant = False
-        
-        # Local search fallback
-        if collection_id not in self.collections:
+        # Embed query
+        try:
+            query_vecs = self._embed_texts([query])
+            if not query_vecs:
+                return []
+            query_vector = query_vecs[0]
+        except Exception as e:
+            logger.error(f"Embedding error on search: {e}")
             return []
         
-        collection = self.collections[collection_id]
-        
-        # Simple text-based search (can be enhanced with embeddings)
-        query_lower = query.lower()
-        results = []
-        
-        for i, doc in enumerate(collection["documents"]):
-            if query_lower in doc.lower():
-                results.append({
-                    "document": doc,
-                    "metadata": collection["metadata"][i],
-                    "score": 1.0  # Simple binary score
+        # Search Qdrant
+        try:
+            results = self.qdrant_client.search(
+                collection_name=collection_metadata.name,
+                query_vector=query_vector,
+                limit=top_k,
+                with_payload=True
+            )
+            formatted = []
+            for r in results:
+                payload = r.payload or {}
+                formatted.append({
+                    "document": payload.get("text", ""),
+                    "metadata": {k: v for k, v in payload.items() if k != "text"},
+                    "score": float(r.score) if hasattr(r, 'score') else 0.0
                 })
-        
-        # Sort by score and return top_k
-        results.sort(key=lambda x: x["score"], reverse=True)
-        
-        logger.info(f"Found {len(results)} documents for query in session {session_id}")
-        return results[:top_k]
+            return formatted
+        except Exception as e:
+            logger.error(f"Qdrant search failed: {e}")
+            return []
+
+    def _embed_texts(self, texts: List[str]) -> List[List[float]]:
+        """Create embeddings for a list of texts using Google Generative AI (per-text calls)."""
+        if not texts:
+            return []
+        vectors: List[List[float]] = []
+        try:
+            for t in texts:
+                resp = genai.embed_content(model=self.embedding_model, content=t)
+                vec = None
+                if isinstance(resp, dict):
+                    vec = resp.get("embedding") or resp.get("values")
+                    # Some SDKs nest under 'embedding': {'values': [...]}
+                    if isinstance(vec, dict) and "values" in vec:
+                        vec = vec["values"]
+                if not isinstance(vec, list):
+                    raise RuntimeError("Invalid embedding response format")
+                # Normalize dimension
+                if len(vec) > self.vector_size:
+                    vec = vec[:self.vector_size]
+                elif len(vec) < self.vector_size:
+                    vec = vec + [0.0] * (self.vector_size - len(vec))
+                vectors.append(vec)
+            return vectors
+        except Exception as e:
+            raise RuntimeError(f"Embedding call failed: {e}")
     
     def clear_collection(self, session_id: str) -> str:
         """Clear all documents from a session's collection"""
@@ -382,22 +297,12 @@ class ConsolidatedRAGManager:
         collection_metadata.document_count = 0
         collection_metadata.last_accessed = datetime.now()
         
-        if self.use_qdrant:
-            try:
-                # Clear Qdrant collection
-                self.qdrant_client.delete_collection(collection_id)
-                logger.info(f"Cleared Qdrant collection {collection_id} for session {session_id}")
-            except Exception as e:
-                logger.error(f"Failed to clear Quadrant collection: {e}")
-        
-        # Clear local collection
-        self.collections[collection_id] = {
-            "documents": [],
-            "embeddings": [],
-            "metadata": []
-        }
-        
-        self._save_collections()
+        try:
+            # Use Qdrant collection name (metadata.name)
+            self.qdrant_client.delete_collection(self.collection_metadata[collection_id].name)
+            logger.info(f"Cleared Qdrant collection {self.collection_metadata[collection_id].name} for session {session_id}")
+        except Exception as e:
+            logger.error(f"Failed to clear Qdrant collection: {e}")
         
         logger.info(f"Cleared collection {collection_id} for session {session_id}")
         return f"Cleared collection for session {session_id}"
@@ -411,27 +316,12 @@ class ConsolidatedRAGManager:
         # Mark as deleted
         self.collection_metadata[collection_id].status = CollectionStatus.DELETED
         
-        if self.use_qdrant:
-            try:
-                # Delete Qdrant collection
-                self.qdrant_client.delete_collection(collection_id)
-                logger.info(f"Deleted Qdrant collection {collection_id} for session {session_id}")
-            except Exception as e:
-                logger.error(f"Failed to delete Quadrant collection: {e}")
-        
-        # Remove from active collections
-        if collection_id in self.collections:
-            del self.collections[collection_id]
-        
-        # Remove from storage
         try:
-            collection_file = os.path.join(self.storage_path, f"{collection_id}.json")
-            if os.path.exists(collection_file):
-                os.remove(collection_file)
+            # Use Qdrant collection name (metadata.name)
+            self.qdrant_client.delete_collection(self.collection_metadata[collection_id].name)
+            logger.info(f"Deleted Qdrant collection {self.collection_metadata[collection_id].name} for session {session_id}")
         except Exception as e:
-            logger.error(f"Error removing collection file: {e}")
-        
-        self._save_collections()
+            logger.error(f"Failed to delete Qdrant collection: {e}")
         
         logger.info(f"Deleted collection {collection_id} for session {session_id}")
         return f"Deleted collection for session {session_id}"
@@ -460,7 +350,7 @@ class ConsolidatedRAGManager:
             "name": metadata.name,
             "description": metadata.description,
             "tags": metadata.tags,
-            "storage_type": "quadrant" if self.use_qdrant else "local"
+            "storage_type": "qdrant"
         }
     
     def list_collections(self, 
@@ -483,7 +373,7 @@ class ConsolidatedRAGManager:
                 "last_accessed": metadata.last_accessed.isoformat(),
                 "description": metadata.description,
                 "tags": metadata.tags,
-                "storage_type": "quadrant" if self.use_qdrant else "local"
+                        "storage_type": "qdrant"
             })
         
         # Sort by last accessed time
@@ -506,8 +396,6 @@ class ConsolidatedRAGManager:
         # Archive old collections
         for collection_id in collections_to_archive:
             self.collection_metadata[collection_id].status = CollectionStatus.ARCHIVED
-            if collection_id in self.collections:
-                del self.collections[collection_id]
             logger.info(f"Archived old collection {collection_id}")
         
         # If still over limit, remove oldest archived collections
@@ -529,8 +417,7 @@ class ConsolidatedRAGManager:
                 del self.collection_metadata[collection_id]
                 logger.info(f"Removed archived collection {collection_id}")
         
-        if collections_to_archive:
-            self._save_collections()
+        # No on-disk save; metadata is in-memory only
     
     def get_manager_stats(self) -> Dict[str, Any]:
         """Get manager statistics"""
@@ -548,8 +435,8 @@ class ConsolidatedRAGManager:
             "max_collections": self.max_collections,
             "collection_ttl_hours": self.collection_ttl_hours,
             "auto_cleanup_enabled": self.auto_cleanup,
-            "storage_type": "qdrant" if self.use_qdrant else "local",
-            "quadrant_available": QDRANT_AVAILABLE
+            "storage_type": "qdrant",
+            "quadrant_available": True
         }
     
     def cleanup_old_collections(self):
@@ -565,8 +452,8 @@ def get_global_rag_manager() -> ConsolidatedRAGManager:
     global _global_rag_manager
     if _global_rag_manager is None:
         # Get configuration from environment variables
-        quadrant_url = os.getenv("QUADRANT_URL")
-        quadrant_api_key = os.getenv("QUADRANT_API_KEY")
+        quadrant_url = os.getenv("QDRANT_URL")
+        quadrant_api_key = os.getenv("QDRANT_API_KEY")
         
         _global_rag_manager = ConsolidatedRAGManager(
             quadrant_url=quadrant_url,
@@ -576,8 +463,8 @@ def get_global_rag_manager() -> ConsolidatedRAGManager:
 
 def create_session_rag_manager(session_id: str) -> ConsolidatedRAGManager:
     """Create a new RAG manager instance for a session"""
-    quadrant_url = os.getenv("QUADRANT_URL")
-    quadrant_api_key = os.getenv("QUADRANT_API_KEY")
+    quadrant_url = os.getenv("QDRANT_URL")
+    quadrant_api_key = os.getenv("QDRANT_API_KEY")
     
     return ConsolidatedRAGManager(
         quadrant_url=quadrant_url,

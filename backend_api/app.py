@@ -107,6 +107,13 @@ class SessionManager:
         self.flight_data[session_id] = flight_data
         self.sessions[session_id]['flight_data'] = flight_data
         
+        # Immediately sync to telemetry retriever cache
+        try:
+            telemetry_retriever = get_global_telemetry_retriever()
+            telemetry_retriever.set_flight_data(session_id, flight_data)
+        except Exception as e:
+            logger.warning(f"Failed to set telemetry data for session {session_id}: {e}")
+        
         # Update context with flight data summary
         context = self.sessions[session_id]['context']
         context['has_flight_data'] = True
@@ -185,6 +192,14 @@ class SessionManager:
             except Exception as e:
                 logger.error(f"Failed to create LLM agent for session {session_id}: {str(e)}")
                 return None
+        
+        # Ensure telemetry cache is synchronized for this session
+        try:
+            if session_id in self.flight_data:
+                telemetry_retriever = get_global_telemetry_retriever()
+                telemetry_retriever.set_flight_data(session_id, self.flight_data[session_id])
+        except Exception as e:
+            logger.warning(f"Failed to sync telemetry cache for session {session_id}: {e}")
         
         return self.llm_agents[session_id]
     

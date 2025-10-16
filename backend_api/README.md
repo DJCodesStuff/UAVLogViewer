@@ -78,15 +78,21 @@ The API will start on `http://localhost:8000`
 
 ### Vector Database Settings
 
-The smart vector database can be configured in `vector_db_manager.py`:
+Qdrant is mandatory. Set these environment variables:
 
-```python
-SmartVectorDBManager(
-    max_collections=50,        # Maximum active collections
-    collection_ttl_hours=24,   # Collection time-to-live
-    auto_cleanup=True,         # Enable automatic cleanup
-    storage_path="./vector_storage"  # Storage directory
-)
+```
+QDRANT_URL=<your_qdrant_url>
+QDRANT_API_KEY=<your_api_key>
+```
+
+## 🔧 Maintenance
+
+Cleanup all Qdrant collections:
+
+```bash
+cd backend_api
+python force_cleanup.py --dry-run   # preview
+python force_cleanup.py --force     # delete all collections
 ```
 
 ## 🔌 API Endpoints

@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
 """
-force_cleanup.py - Force cleanup of all collections by directly clearing storage
+force_cleanup.py - Qdrant collections cleanup
 
-This script directly clears all collections by:
-1. Clearing the vector_storage directory
-2. Resetting the RAG manager
-3. Optionally clearing Qdrant collections
+This script deletes ALL collections from the configured Qdrant instance.
 
 Usage:
-    python force_cleanup.py [--qdrant] [--force] [--backup] [--dry-run]
-    
+    python force_cleanup.py [--force] [--dry-run]
+
 Options:
-    --qdrant     Also clear Qdrant collections
-    --force      Skip confirmation prompts
-    --backup     Create backup before deletion
-    --dry-run    Show what would be deleted without actually deleting
+    --force      Skip confirmation prompt
+    --dry-run    Show what would be deleted without deleting
 """
 
 import os
 import sys
-import json
 import argparse
 import logging
-import shutil
-from datetime import datetime
 from typing import List, Dict, Any
 from dotenv import load_dotenv
 
@@ -42,11 +34,11 @@ def get_qdrant_client():
     try:
         from qdrant_client import QdrantClient
         
-        qdrant_url = os.getenv("QUADRANT_URL")
-        qdrant_api_key = os.getenv("QUADRANT_API_KEY")
+        qdrant_url = os.getenv("QDRANT_URL")
+        qdrant_api_key = os.getenv("QDRANT_API_KEY")
         
         if not qdrant_url or not qdrant_api_key:
-            logger.warning("QUADRANT_URL and QUADRANT_API_KEY not set - skipping Qdrant operations")
+            logger.warning("QDRANT_URL and QDRANT_API_KEY not set - skipping Qdrant operations")
             return None
         
         client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
@@ -66,105 +58,63 @@ def get_qdrant_collections(client) -> List[Dict[str, Any]]:
     try:
         collections_response = client.get_collections()
         collections = []
-        
-        for collection in collections_response.collections:
-            collection_info = {
-                'name': collection.name,
-                'points_count': collection.points_count,
-                'source': 'qdrant'
-            }
-            collections.append(collection_info)
+        for c in collections_response.collections:
+            # points_count needs extra call per collection in newer clients
+            name = c.name if hasattr(c, 'name') else getattr(c, 'collection_name', None)
+            points_count = 0
+            try:
+                if name:
+                    info = client.get_collection(name)
+                    points_count = getattr(info, 'points_count', 0) or getattr(getattr(info, 'status', {}), 'points_count', 0)
+            except Exception:
+                points_count = 0
+            if name:
+                collections.append({'name': name, 'points_count': points_count, 'source': 'qdrant'})
         
         return collections
     except Exception as e:
         logger.error(f"Failed to get Qdrant collections: {e}")
         return []
 
-def backup_storage(backup_file: str = None) -> str:
-    """Create a backup of the storage directory"""
-    if not backup_file:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = f"storage_backup_{timestamp}"
-    
-    storage_path = "./vector_storage"
-    
-    if not os.path.exists(storage_path):
-        logger.info("No storage directory to backup")
-        return None
-    
-    try:
-        shutil.copytree(storage_path, backup_file)
-        logger.info(f"Storage backup created: {backup_file}")
-        return backup_file
-    except Exception as e:
-        logger.error(f"Failed to create storage backup: {e}")
-        return None
-
-def force_cleanup(qdrant: bool = False, dry_run: bool = False) -> Dict[str, int]:
-    """Force cleanup of all collections"""
+def force_cleanup(dry_run: bool = False) -> Dict[str, int]:
+    """Delete all collections from Qdrant"""
     results = {
-        'storage_cleared': False,
         'qdrant_collections_deleted': 0,
         'qdrant_failed': 0
     }
     
-    # Clear local storage
-    storage_path = "./vector_storage"
+    qdrant_client = get_qdrant_client()
+    if not qdrant_client:
+        logger.error("Qdrant client not available - set QDRANT_URL and QDRANT_API_KEY")
+        return results
+    
+    qdrant_collections = get_qdrant_collections(qdrant_client)
     
     if dry_run:
-        logger.info("🔍 DRY RUN - No data will actually be deleted")
-        if os.path.exists(storage_path):
-            logger.info(f"Would clear storage directory: {storage_path}")
-        else:
-            logger.info("No storage directory to clear")
-    else:
-        if os.path.exists(storage_path):
-            try:
-                shutil.rmtree(storage_path)
-                logger.info(f"✅ Cleared storage directory: {storage_path}")
-                results['storage_cleared'] = True
-            except Exception as e:
-                logger.error(f"❌ Failed to clear storage directory: {e}")
-        else:
-            logger.info("No storage directory to clear")
+        logger.info(f"Would delete {len(qdrant_collections)} Qdrant collections")
+        for collection in qdrant_collections:
+            logger.info(f"  - {collection['name']}: {collection['points_count']} points")
+        return results
     
-    # Clear Qdrant collections if requested
-    if qdrant:
-        qdrant_client = get_qdrant_client()
-        if qdrant_client:
-            qdrant_collections = get_qdrant_collections(qdrant_client)
-            
-            if dry_run:
-                logger.info(f"Would delete {len(qdrant_collections)} Qdrant collections")
-                for collection in qdrant_collections:
-                    logger.info(f"  - {collection['name']}: {collection['points_count']} points")
-            else:
-                logger.info(f"Deleting {len(qdrant_collections)} Qdrant collections...")
-                
-                for collection in qdrant_collections:
-                    collection_name = collection['name']
-                    points_count = collection['points_count']
-                    
-                    try:
-                        qdrant_client.delete_collection(collection_name)
-                        logger.info(f"✅ Deleted Qdrant collection: {collection_name} ({points_count} points)")
-                        results['qdrant_collections_deleted'] += 1
-                    except Exception as e:
-                        logger.error(f"❌ Failed to delete Qdrant collection {collection_name}: {e}")
-                        results['qdrant_failed'] += 1
-        else:
-            logger.warning("Qdrant client not available - skipping Qdrant cleanup")
+    logger.info(f"Deleting {len(qdrant_collections)} Qdrant collections...")
+    for collection in qdrant_collections:
+        collection_name = collection['name']
+        points_count = collection['points_count']
+        try:
+            qdrant_client.delete_collection(collection_name)
+            logger.info(f"✅ Deleted Qdrant collection: {collection_name} ({points_count} points)")
+            results['qdrant_collections_deleted'] += 1
+        except Exception as e:
+            logger.error(f"❌ Failed to delete Qdrant collection {collection_name}: {e}")
+            results['qdrant_failed'] += 1
     
     return results
 
-def confirm_cleanup(qdrant: bool = False) -> bool:
+def confirm_cleanup() -> bool:
     """Ask for user confirmation before cleanup"""
     print(f"\n⚠️  WARNING: You are about to perform a FORCE cleanup!")
     print(f"   This will permanently delete:")
-    print(f"   - All local storage files")
-    
-    if qdrant:
-        print(f"   - All Qdrant collections")
+    print(f"   - ALL Qdrant collections in the configured instance")
     
     print(f"\nThis action cannot be undone!")
     
@@ -179,59 +129,42 @@ def confirm_cleanup(qdrant: bool = False) -> bool:
 
 def main():
     """Main function"""
-    parser = argparse.ArgumentParser(description="Force cleanup of all collections")
-    parser.add_argument('--qdrant', action='store_true', help='Also clear Qdrant collections')
+    parser = argparse.ArgumentParser(description="Delete ALL collections from Qdrant")
     parser.add_argument('--force', action='store_true', help='Skip confirmation prompts')
-    parser.add_argument('--backup', action='store_true', help='Create backup before deletion')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be deleted without actually deleting')
-    parser.add_argument('--backup-file', type=str, help='Custom backup file path')
     
     args = parser.parse_args()
     
-    print("🗄️  Force Collection Cleanup Script")
+    print("🗄️  Qdrant Collections Cleanup")
     print("=" * 50)
-    
-    # Create backup if requested
-    backup_file = None
-    if args.backup:
-        backup_file = backup_storage(args.backup_file)
-        if not backup_file and os.path.exists("./vector_storage"):
-            logger.error("Failed to create backup. Aborting.")
-            sys.exit(1)
     
     # Show dry run results
     if args.dry_run:
-        force_cleanup(qdrant=args.qdrant, dry_run=True)
+        force_cleanup(dry_run=True)
         return
     
     # Confirm cleanup unless forced
     if not args.force:
-        if not confirm_cleanup(qdrant=args.qdrant):
+        if not confirm_cleanup():
             logger.info("Cleanup cancelled by user")
             return
     
     # Perform cleanup
-    results = force_cleanup(qdrant=args.qdrant, dry_run=False)
+    results = force_cleanup(dry_run=False)
     
     # Show results
     print("\n" + "=" * 50)
     print("📊 CLEANUP RESULTS")
     print("=" * 50)
-    print(f"Storage cleared: {'✅' if results['storage_cleared'] else '❌'}")
-    
-    if args.qdrant:
-        print(f"Qdrant collections deleted: {results['qdrant_collections_deleted']}")
-        if results['qdrant_failed'] > 0:
-            print(f"Qdrant failures: {results['qdrant_failed']}")
+    print(f"Qdrant collections deleted: {results['qdrant_collections_deleted']}")
+    if results['qdrant_failed'] > 0:
+        print(f"Qdrant failures: {results['qdrant_failed']}")
     
     if results['qdrant_failed'] > 0:
         print(f"\n⚠️  {results['qdrant_failed']} Qdrant collections failed to delete. Check logs for details.")
         sys.exit(1)
     else:
-        print("\n✅ Force cleanup completed successfully!")
-        
-        if backup_file:
-            print(f"💾 Backup available at: {backup_file}")
+        print("\n✅ Qdrant cleanup completed successfully!")
 
 if __name__ == "__main__":
     main()

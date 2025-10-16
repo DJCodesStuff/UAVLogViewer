@@ -310,18 +310,16 @@ class LangGraphReactAgent:
                 result = telemetry_retriever.query_telemetry(self.session_id, query)
                 
                 if "error" in result:
-                    return f"Error retrieving telemetry data: {result['error']}. {result.get('suggestion', '')}"
+                    return f"I couldn't find that data: {result['error']}. {result.get('suggestion', '')}"
                 
                 # Format the response with comprehensive documentation
-                response = f"Telemetry data for {parameter}:\n"
-                response += f"Description: {result['documentation']['description']}\n"
-                response += f"Units: {result['documentation']['units']}\n"
-                response += f"Category: {result['documentation']['category']}\n"
-                response += f"Data points: {result['data_points']}\n"
+                response = f"Telemetry: {parameter}. "
+                response += f"{result['documentation']['description']}. "
+                response += f"Data points: {result['data_points']}.\n"
                 
                 # Add field-specific documentation
                 if 'field_documentation' in result and result['field_documentation']:
-                    response += f"\nField Details:\n"
+                    response += f"\nFields:\n"
                     for field, doc in result['field_documentation'].items():
                         response += f"- {field}: {doc.get('description', 'No description')} ({doc.get('units', 'unknown units')})\n"
                 
@@ -348,21 +346,22 @@ class LangGraphReactAgent:
         """Create telemetry summary tool"""
         @tool
         def get_telemetry_summary() -> str:
-            """Get a summary of available telemetry data for the current session. Use this to understand what data is available for analysis."""
+            """Get a brief, plain summary of what data is available for this session."""
             try:
                 telemetry_retriever = get_global_telemetry_retriever()
                 summary = telemetry_retriever.get_telemetry_summary(self.session_id)
                 
                 if "error" in summary:
-                    return f"Error getting telemetry summary: {summary['error']}"
+                    return f"I couldn't get the data summary: {summary['error']}"
                 
-                response = f"Available telemetry data for session {self.session_id}:\n"
-                response += f"Available parameters: {', '.join(summary['available_parameters'])}\n"
-                
-                for source in summary['data_sources']:
-                    response += f"- {source['type']}: {source['count']} items ({source['description']})\n"
-                
-                return response
+                bullets = []
+                for source in summary.get('data_sources', [])[:3]:
+                    bullets.append(f"- {source['type']}: {source['count']}")
+
+                takeaway = "Data loaded."
+                if bullets:
+                    return takeaway + "\n" + "\n".join(bullets) + "\nNext: ask for a parameter you care about."
+                return takeaway + "\nNext: ask for a parameter you care about."
                 
             except Exception as e:
                 return f"Error getting telemetry summary: {str(e)}"
@@ -373,36 +372,29 @@ class LangGraphReactAgent:
         """Create anomaly analysis tool"""
         @tool
         def analyze_flight_anomalies(user_question: str = "") -> str:
-            """Analyze flight data for anomalies and potential issues. Use this when the user asks about anomalies, problems, or issues in the flight data."""
+            """Give a brief, plain-language anomaly check with up to 3 bullets and one next step."""
             try:
                 telemetry_retriever = get_global_telemetry_retriever()
                 analysis_result = telemetry_retriever.analyze_flight_anomalies(self.session_id, user_question)
                 
                 if "error" in analysis_result:
-                    return f"Error analyzing flight anomalies: {analysis_result['error']}"
+                    return f"I couldn't analyze the flight yet: {analysis_result['error']}. Try uploading the log or asking again."
                 
-                # Format the response
-                response = f"Flight Anomaly Analysis for session {self.session_id}:\n"
-                response += f"Flight Duration: {analysis_result['telemetry_summary']['flight_duration']:.1f} seconds\n"
-                response += f"Data Points: {analysis_result['telemetry_summary']['total_data_points']:,}\n"
-                response += f"Parameters Analyzed: {len(analysis_result['telemetry_summary']['parameters_analyzed'])}\n"
-                response += f"Anomaly Indicators: {analysis_result['telemetry_summary']['anomaly_indicators_count']}\n"
-                response += f"Flight Phases: {analysis_result['telemetry_summary']['flight_phases_count']}\n\n"
-                
-                if analysis_result['anomaly_indicators']:
-                    response += "ANOMALY INDICATORS DETECTED:\n"
-                    for indicator in analysis_result['anomaly_indicators'][:5]:  # Show top 5
-                        response += f"- {indicator['type'].upper()}: {indicator['description']}\n"
-                        response += f"  Severity: {indicator['severity']}, Time: {indicator['timestamp']}\n"
-                else:
-                    response += "No significant anomaly indicators detected.\n"
-                
-                if analysis_result['flight_phases']:
-                    response += "\nFLIGHT PHASES:\n"
-                    for phase in analysis_result['flight_phases']:
-                        response += f"- {phase['phase'].upper()}: {phase['description']}\n"
-                
-                return response
+                duration = analysis_result['telemetry_summary']['flight_duration']
+                indicators = analysis_result['telemetry_summary']['anomaly_indicators_count']
+                takeaway = (
+                    "Bottom line: nothing clearly concerning." if indicators == 0 else
+                    "Bottom line: a few things to look at."
+                )
+
+                bullets = []
+                bullets.append(f"- Flight length: ~{duration:.0f}s")
+                if indicators > 0:
+                    for indicator in analysis_result['anomaly_indicators'][:2]:
+                        bullets.append(f"- {indicator['type'].capitalize()}: {indicator['description']}")
+
+                next_step = "Next: tell me what system to focus on (e.g., GPS, battery)."
+                return takeaway + ("\n" + "\n".join(bullets) if bullets else "") + "\n" + next_step
                 
             except Exception as e:
                 return f"Error analyzing flight anomalies: {str(e)}"
@@ -413,7 +405,7 @@ class LangGraphReactAgent:
         """Create structured telemetry data tool"""
         @tool
         def get_structured_flight_data() -> str:
-            """Get structured flight data summary for comprehensive analysis. Use this when you need detailed flight data for analysis."""
+            """Give a short summary of key flight stats with up to 3 bullets and one next step."""
             try:
                 telemetry_retriever = get_global_telemetry_retriever()
                 structured_data = telemetry_retriever.get_structured_telemetry_data(self.session_id)
@@ -421,34 +413,15 @@ class LangGraphReactAgent:
                 if "error" in structured_data:
                     return f"Error getting structured data: {structured_data['error']}"
                 
-                # Format the response
-                response = f"Structured Flight Data for session {self.session_id}:\n\n"
-                
-                # Flight overview
                 overview = structured_data['flight_overview']
-                response += f"FLIGHT OVERVIEW:\n"
-                response += f"- Duration: {overview['duration_seconds']:.1f} seconds\n"
-                response += f"- Data Points: {overview['total_data_points']:,}\n"
-                response += f"- Parameters: {len(overview['parameters_available'])}\n\n"
-                
-                # Key parameters
-                if structured_data['key_parameters']:
-                    response += "KEY PARAMETERS:\n"
-                    for param, stats in structured_data['key_parameters'].items():
-                        response += f"- {param.upper()}:\n"
-                        response += f"  Range: {stats['min']:.2f} to {stats['max']:.2f}\n"
-                        response += f"  Mean: {stats['mean']:.2f} ± {stats['std_dev']:.2f}\n"
-                        response += f"  Trend: {stats['trend']}\n"
-                        response += f"  Data Points: {stats['data_points']}\n"
-                
-                # Anomaly summary
-                anomaly_summary = structured_data['anomaly_summary']
-                response += f"\nANOMALY SUMMARY:\n"
-                response += f"- Total Indicators: {anomaly_summary['total_indicators']}\n"
-                response += f"- High Severity: {anomaly_summary['high_severity']}\n"
-                response += f"- Critical Severity: {anomaly_summary['critical_severity']}\n"
-                
-                return response
+                takeaway = "Quick summary: data is ready."
+                bullets = [
+                    f"- Duration: ~{overview['duration_seconds']:.0f}s",
+                    f"- Data points: {overview['total_data_points']:,}",
+                    f"- Parameters: {len(overview['parameters_available'])}"
+                ]
+                next_step = "Next: ask about a specific parameter (e.g., GPS altitude, battery)."
+                return takeaway + "\n" + "\n".join(bullets[:3]) + "\n" + next_step
                 
             except Exception as e:
                 return f"Error getting structured flight data: {str(e)}"
@@ -488,8 +461,14 @@ class LangGraphReactAgent:
                 )
                 messages.append(context_msg)
             
-            # Get response from model
-            response = self.llm.bind_tools(self.tools).invoke(messages)
+            # Encourage the model to consult ArduPilot docs when relevant
+            guidance = HumanMessage(content=(
+                "Reminder: If the user asks about ArduPilot parameters, message names, fields, or units, "
+                "consult the ArduPilot documentation tool before finalizing your answer."
+            ))
+
+            # Get response from model with guidance
+            response = self.llm.bind_tools(self.tools).invoke(messages + [guidance])
             
             return {"messages": [response]}
         
