@@ -1,3 +1,0 @@
-SESSION session_mguhqwbo ATTITUDE
-Points: 888
-Stats: {}

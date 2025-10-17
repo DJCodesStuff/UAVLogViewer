@@ -88,28 +88,28 @@ def upload_flight_data():
             texts, payloads = telemetry_service.create_vector_documents(session_id, data)
 
             # Dump RAG chunks to rag_docs for inspection
-            try:
-                project_root = os.path.dirname(os.path.dirname(__file__))
-                dump_dir = os.path.join(project_root, 'rag_docs', f'session_{session_id}')
-                os.makedirs(dump_dir, exist_ok=True)
+            # try:
+            #     project_root = os.path.dirname(os.path.dirname(__file__))
+            #     dump_dir = os.path.join(project_root, 'rag_docs', f'session_{session_id}')
+            #     os.makedirs(dump_dir, exist_ok=True)
 
-                # Write each text chunk to a file with type label
-                for idx, (text, pl) in enumerate(zip(texts, payloads)):
-                    chunk_type = (pl.get('type') or 'chunk') if isinstance(pl, dict) else 'chunk'
-                    fname = f"{idx:03d}_{chunk_type}.txt"
-                    with open(os.path.join(dump_dir, fname), 'w', encoding='utf-8') as f:
-                        f.write(text if isinstance(text, str) else str(text))
+            #     # Write each text chunk to a file with type label
+            #     for idx, (text, pl) in enumerate(zip(texts, payloads)):
+            #         chunk_type = (pl.get('type') or 'chunk') if isinstance(pl, dict) else 'chunk'
+            #         fname = f"{idx:03d}_{chunk_type}.txt"
+            #         with open(os.path.join(dump_dir, fname), 'w', encoding='utf-8') as f:
+            #             f.write(text if isinstance(text, str) else str(text))
 
-                # Write manifest with payload metadata
-                manifest_path = os.path.join(dump_dir, 'manifest.json')
-                with open(manifest_path, 'w', encoding='utf-8') as mf:
-                    json.dump({
-                        'session_id': session_id,
-                        'count': len(texts),
-                        'payloads': payloads
-                    }, mf, ensure_ascii=False, indent=2)
-            except Exception as e:
-                logger.error(f"Error writing RAG debug dump: {e}")
+            #     # Write manifest with payload metadata
+            #     manifest_path = os.path.join(dump_dir, 'manifest.json')
+            #     with open(manifest_path, 'w', encoding='utf-8') as mf:
+            #         json.dump({
+            #             'session_id': session_id,
+            #             'count': len(texts),
+            #             'payloads': payloads
+            #         }, mf, ensure_ascii=False, indent=2)
+            # except Exception as e:
+            #     logger.error(f"Error writing RAG debug dump: {e}")
             # Generate embeddings
             vectors = gemini_service.embed_texts(texts)
             if texts and vectors and len(texts) == len(vectors):

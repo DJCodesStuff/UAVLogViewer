@@ -1,2 +1,0 @@
-SESSION session_mguidmy6 EVENTS
-Count: 0

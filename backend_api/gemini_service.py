@@ -289,8 +289,12 @@ Be specific and reference actual data values when available. Keep it brief and f
         # Normalize and strip diacritics
         normalized = unicodedata.normalize('NFKD', text)
         ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
-        # Remove special markup characters and square brackets
-        cleaned = re.sub(r"[\[\]`*]+", "", ascii_text)
+        # Remove markdown bullets at line starts and common markup chars
+        cleaned = re.sub(r"(?m)^[\-*•]+\s+", "", ascii_text)
+        cleaned = re.sub(r"[\[\]`*]+", "", cleaned)
+        # Unescape sequences like std\_dev -> std_dev, remove stray backslashes
+        cleaned = cleaned.replace("\\_", "_")
+        cleaned = cleaned.replace("\\", "")
         # Collapse whitespace
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         return cleaned

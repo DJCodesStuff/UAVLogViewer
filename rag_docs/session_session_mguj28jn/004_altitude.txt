@@ -1,3 +1,0 @@
-SESSION session_mguj28jn ALTITUDE
-Points: 807
-Stats: {'min': -9.429, 'max': 56.6, 'mean': 22.421537794299876, 'median': 35.07, 'std_dev': 20.663489826915583, 'count': 807}

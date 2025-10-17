@@ -1,9 +1,0 @@
-SESSION session_mguib2vb ALTITUDE
-Points: 807
-Stats: {'min': -9.429, 'max': 56.6, 'mean': 22.421537794299876, 'median': 35.07, 'std_dev': 20.663489826915583, 'count': 807}
-altitude min: -9.429
-altitude max: 56.6
-altitude mean: 22.421537794299876
-altitude median: 35.07
-altitude std_dev: 20.663489826915583
-altitude count: 807

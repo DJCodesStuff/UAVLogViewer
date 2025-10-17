@@ -1,79 +1,30 @@
-# UAV Log Viewer - Backend API
+## UAV Log Viewer - Backend API
 
-Agentic chatbot backend using LangGraph React agents and Google Gemini API for intelligent flight data analysis.
+Agentic chatbot backend that ingests UAV flight logs, builds retrieval context, and answers questions with grounded, friendly responses.
 
-## Features
+## End-to-End Request Cycle
 
-- 🤖 **Agentic Analysis**: LangGraph-based React agent that reasons about flight data
-- 💬 **Session-based Chat**: Each session maintains independent conversation and flight data
-- 📊 **Telemetry Retrieval**: Dynamic extraction of GPS, battery, altitude, attitude data
-- 🔍 **Anomaly Detection**: Intelligent detection of GPS issues, battery problems, and flight anomalies
-- 🧠 **Google Gemini Integration**: Powered by Gemini 1.5 for natural language understanding
-- 🗄️ **Qdrant Support**: Optional vector database for semantic search (documentation)
-
-## Quick Start
-
-### 1. Prerequisites
-
-- Python 3.10+ (conda environment recommended)
-- Google Gemini API key
-- Qdrant (optional, for documentation search)
-
-### 2. Setup
-
-```bash
-# Navigate to backend directory
-cd backend_api
-
-# Create .env file
-cp .env.example .env
-
-# Edit .env and add your Google API key
-# GOOGLE_API_KEY=your_actual_api_key_here
-
-# Install dependencies (using conda arena env)
-conda activate arena
-pip install -r requirements.txt
-```
-
-### 3. Configure Qdrant Cloud (Optional)
-
-```bash
-# Add to your .env file:
-QDRANT_URL=https://your-cluster-id.eu-central-1.aws.cloud.qdrant.io
-QDRANT_API_KEY=your_qdrant_api_key_here
-
-# Or skip this - the backend will work without Qdrant
-```
-
-### 4. Run the Backend
-
-```bash
-# Using Python
-python app.py
-
-# Or using Flask directly
-flask run --host=0.0.0.0 --port=8000
-```
-
-The API will start on `http://localhost:8000`
-
-## API Endpoints
-
-### Health Check
-```
-GET /api/health
-```
-
-### Upload Flight Data
-```
+### 1) Client uploads a flight log
+```http
 POST /api/flight-data
 Headers: X-Session-ID: <session_id>
-Body: JSON flight data from frontend
+Body: JSON flight data
 ```
+What happens:
+- Session is created/updated and raw `flight_data` is stored.
+- TelemetryService derives per-stream data (GPS, ALTITUDE, BATTERY, ATTITUDE, EVENTS) with statistics and rich metadata (time range, sampling rate, missingness, GPS bbox, units).
+- Two kinds of RAG artifacts are produced for this session:
+  - Text dumps (for transparency and debugging) written to `rag_docs/session_<session_id>/` (e.g., `000_summary.txt`, `..._points.txt`, etc.).
+  - Structured "stream cards" and derived summaries written as JSON to the same folder (e.g., `900_session_meta.json`, `901_stream_gps.json`, `930_flight_overview.json`, etc.).
+- All artifacts are embedded and upserted into Qdrant under a per-session collection `session_<session_id>` (if Qdrant is configured).
 
-### Chat
-```
+Details on artifacts:
+- Text dumps are human-friendly and mirror the telemetry (e.g., `GPS POINTS CHUNK N` with CSV-like rows). These help you audit exactly what goes into retrieval.
+- Stream cards are compact JSON facts designed for LLMs: consistent keys (`stream`, `statistics`, `units`, `time`, `metadata`) so the agent can quote precise values (min/max/mean, sampling rate, missingness, bbox).
+- Derived cards (e.g., `flight_overview`, `data_quality_overview`, `gps_issues_overview`, `anomalies_overview`) are higher-level summaries that answer common “overview” questions quickly.
+
+### 2) User asks a question
+```http
 POST /api/chat
 Headers: X-Session-ID: <session_id>
 Body: {
@@ -82,119 +33,109 @@ Body: {
   "timestamp": 1234567890
 }
 ```
+What happens:
+- The message is appended to the session conversation.
+- The agent starts a single-step RAG answer flow:
+  1. Embed the user question.
+  2. Retrieve from the per-session Qdrant collection (and optionally the global docs collection), then apply thresholds: `RETRIEVAL_MIN_SCORE` and `RETRIEVAL_MIN_HITS`.
+  3. Build a compact context from the top matches (stream cards first, then text dumps); redact session identifiers.
+  4. Ask Gemini to answer strictly from the context (temperature 0.0). If the facts are missing, the model is instructed to say what is needed.
+  5. Run a verification pass to ensure the answer is supported by the context; if not, abstain.
+  6. Sanitize for plain text output (no markdown bullets or escaped characters); never show session IDs.
+- The final answer is returned and appended to the conversation history.
 
-### Get Session Summary
-```
-GET /api/session/<session_id>/summary
-```
+### 3) Optional web/doc search (opt-in)
+- If `WEB_TOOL_ENABLED=true` and the user explicitly requests a web/doc search (configurable triggers), a small snippet list is appended to the context before answering.
 
-### Get Telemetry Data
-```
-GET /api/telemetry/<session_id>/<parameter>
-Parameters: GPS, BATTERY, ALTITUDE, ATTITUDE, EVENTS
-```
+## Grounding, Safety, and Output Controls
 
-### Get Anomalies
-```
-GET /api/anomalies/<session_id>
-```
+- Grounding: `GROUNDING_REQUIRED=true`, `RETRIEVAL_MIN_SCORE`, `RETRIEVAL_MIN_HITS` enforce answer-from-context-or-abstain.
+- Verification: answers are fact-checked against the same context.
+- Redaction: `REDACT_SESSION_IDS=true` strips session identifiers from both context and answers.
+- Plain text: `SANITIZE_OUTPUT=true` removes markdown bullets, backticks, brackets, and escape characters.
+- Citations: `REQUIRE_CITATIONS` can enable/disable minimal source tags in answers (disabled by default).
 
-## Architecture
+Verification specifics:
+- Verification runs a second deterministic pass (“OK/UNSUPPORTED”) against the exact RAG context. Any unsupported claims force a safe abstention with a request for more data.
+- This dramatically reduces hallucinations at the cost of sometimes asking you to clarify or upload more data.
 
-### Agent Flow
+## Key Endpoints
 
-The backend uses a simple React-style agent:
+- Health: `GET /api/health`
+- Upload flight data: `POST /api/flight-data`
+- Chat: `POST /api/chat`
+- Session summary: `GET /api/session/<session_id>/summary`
+- Telemetry by parameter: `GET /api/telemetry/<session_id>/<parameter>`
+- Anomalies: `GET /api/anomalies/<session_id>`
 
-```
-1. THINK: Analyze user question, decide what data is needed
-2. ACT: Retrieve telemetry data, detect anomalies, etc.
-3. OBSERVE: Process results
-4. REPEAT: Continue if more information needed (max 3 iterations)
-5. RESPOND: Generate natural language answer using Gemini
-```
+## Configuration (excerpt)
 
-### Services
-
-- **SessionManager**: Manages user sessions and flight data
-- **TelemetryService**: Extracts and analyzes flight parameters
-- **GeminiService**: Interfaces with Google Gemini API
-- **QdrantService**: Vector database for documentation (optional)
-- **FlightAnalysisAgent**: LangGraph agent orchestrating analysis
-
-## Example Questions
-
-Users can ask questions like:
-
-- "What was the highest altitude reached during the flight?"
-- "When did the GPS signal first get lost?"
-- "What was the maximum battery temperature?"
-- "Are there any anomalies in this flight?"
-- "Can you spot any issues in the GPS data?"
-- "How long was the total flight time?"
-
-The agent will:
-1. Determine what data is needed
-2. Retrieve relevant telemetry
-3. Detect anomalies if needed
-4. Provide a comprehensive, data-driven answer
-
-## Configuration
-
-Edit `.env` file:
-
+Add to `.env`:
 ```bash
 # Required
 GOOGLE_API_KEY=your_gemini_api_key
 
-# Optional
 QDRANT_URL=http://localhost:6333
+QDRANT_API_KEY=...
 FLASK_PORT=8000
-MAX_AGENT_ITERATIONS=5
+
+# Guardrails & Output
+GROUNDING_REQUIRED=true
+RETRIEVAL_MIN_SCORE=0.75
+RETRIEVAL_MIN_HITS=2
+REQUIRE_CITATIONS=false
+DISABLE_SECOND_PASS_ON_RAG=true
+SANITIZE_OUTPUT=true
+REDACT_SESSION_IDS=true
+WEB_TOOL_ENABLED=false
 ```
 
-## Development
+## Running Locally
 
-### Project Structure
+```bash
+cd backend_api
+cp .env.example .env
+# edit .env with your keys
+
+conda activate arena
+pip install -r requirements.txt
+python app.py  # or: flask run --host=0.0.0.0 --port=8000
+```
+
+## Observability Tips
+
+- Check `rag_docs/session_<session_id>/` to see exactly what was indexed (both text and JSON stream cards).
+- Use `GET /api/health` to confirm Qdrant availability.
+- To clear all Qdrant collections: `python backend_api/clear_qdrant.py --dry-run` (or `--yes` to delete).
+
+Telemetry and indexing notes:
+- Each session creates/uses its own Qdrant collection `session_<session_id>` to isolate retrieval by user/session.
+- Vector size is governed by the embeddings model (Google `text-embedding-004`). Distance is COSINE by default.
+
+## Project Structure (abridged)
 
 ```
 backend_api/
-├── app.py                 # Flask application
-├── config.py              # Configuration
-├── models.py              # Data models
-├── session_manager.py     # Session management
-├── telemetry_service.py   # Telemetry extraction
-├── gemini_service.py      # Gemini API integration
-├── qdrant_service.py      # Vector database
-├── agent.py               # LangGraph agent
-└── requirements.txt       # Dependencies
+├── app.py                 # Flask app & endpoints
+├── agent.py               # RAG-first agent with grounding & verification
+├── telemetry_service.py   # Rich extraction + metadata
+├── ingestion_agent.py     # Stream cards & derived overviews + indexing
+├── gemini_service.py      # Gemini chat, embeddings, sanitization, redaction
+├── qdrant_service.py      # Vector DB integration
+├── session_manager.py     # Session store & summaries
+├── config.py              # Feature flags & settings
+└── clear_qdrant.py        # Utility script to wipe Qdrant collections
 ```
 
-### Adding New Features
+## Example Queries
 
-**New telemetry parameter:**
-1. Add extraction logic in `telemetry_service.py`
-2. Update `_create_flight_summary()` to detect it
-3. Add action in `agent.py` if needed
+- What was the highest altitude?
+- Are there any anomalies in this flight?
+- Can you spot any issues in the GPS data?
+- How long was the total flight time?
 
-**New agent action:**
-1. Add condition in `agent._think_node()`
-2. Implement in `agent._act_node()`
+The agent answers in a friendly, interactive tone, grounded strictly on retrieved context.
 
-## Troubleshooting
-
-### "GOOGLE_API_KEY is required"
-- Make sure you created a `.env` file with your API key
-
-### "Could not connect to Qdrant"
-- This is a warning, not an error. The backend works without Qdrant.
-- If you want vector search, start Qdrant with Docker
-
-### Agent not providing good answers
-- Increase `MAX_AGENT_ITERATIONS` in `.env`
-- Check that flight data was uploaded successfully
-- Review logs for errors
-
-## License
-
-Same as UAVLogViewer main project
+Production recommendation:
+- Enable Qdrant for best accuracy and lowest hallucination rate. Keep `GROUNDING_REQUIRED=true` and sensible `RETRIEVAL_MIN_*` thresholds. Reserve `GROUNDING_REQUIRED=false` only for exploratory/testing scenarios.
 
