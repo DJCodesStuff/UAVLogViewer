@@ -1,157 +1,200 @@
-# UAV Log Viewer Backend API - Deployment Guide
+# UAV Log Viewer - Backend API
 
-A Flask-based REST API powering the UAV Log Viewer with AI-assisted analysis, session-scoped RAG (Qdrant), and modular telemetry tooling for MAVLink/Dataflash/DJI logs.
+Agentic chatbot backend using LangGraph React agents and Google Gemini API for intelligent flight data analysis.
 
-## 📋 Table of Contents
+## Features
 
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Deployment Options](#deployment-options)
-- [Environment Setup](#environment-setup)
-- [Troubleshooting](#troubleshooting)
+- 🤖 **Agentic Analysis**: LangGraph-based React agent that reasons about flight data
+- 💬 **Session-based Chat**: Each session maintains independent conversation and flight data
+- 📊 **Telemetry Retrieval**: Dynamic extraction of GPS, battery, altitude, attitude data
+- 🔍 **Anomaly Detection**: Intelligent detection of GPS issues, battery problems, and flight anomalies
+- 🧠 **Google Gemini Integration**: Powered by Gemini 1.5 for natural language understanding
+- 🗄️ **Qdrant Support**: Optional vector database for semantic search (documentation)
 
-## 🛠 Installation
+## Quick Start
 
-### Prerequisites
-- Python 3.8+
+### 1. Prerequisites
+
+- Python 3.10+ (conda environment recommended)
 - Google Gemini API key
-- Qdrant Vector Database access
+- Qdrant (optional, for documentation search)
 
-### Setup
+### 2. Setup
 
-1. **Install Dependencies**
 ```bash
+# Navigate to backend directory
 cd backend_api
+
+# Create .env file
+cp .env.example .env
+
+# Edit .env and add your Google API key
+# GOOGLE_API_KEY=your_actual_api_key_here
+
+# Install dependencies (using conda arena env)
+conda activate arena
 pip install -r requirements.txt
 ```
 
-2. **Environment Configuration**
-The backend includes a reference environment file (`env.example`) with all available configuration options.
+### 3. Configure Qdrant Cloud (Optional)
 
-**Quick Setup:**
 ```bash
-cd backend_api
+# Add to your .env file:
+QDRANT_URL=https://your-cluster-id.eu-central-1.aws.cloud.qdrant.io
+QDRANT_API_KEY=your_qdrant_api_key_here
 
-# Copy the reference environment file
-cp env.example .env
-
-# Edit the .env file with your configuration
-nano .env  # or use your preferred editor
+# Or skip this - the backend will work without Qdrant
 ```
 
-**Required Configuration:**
+### 4. Run the Backend
+
 ```bash
-# Required - Google Gemini API
-GOOGLE_API_KEY=your_google_gemini_api_key
-GOOGLE_MODEL_NAME=gemini-2.0-flash
-
-# Required - Qdrant Vector Database (for RAG functionality)
-QDRANT_URL=https://your-qdrant-url:6333
-QDRANT_API_KEY=your_qdrant_api_key
-```
-
-**Optional Configuration:**
-```bash
-# API Settings
-API_HOST=0.0.0.0
-API_PORT=8000
-API_DEBUG=True
-
-# CORS Settings (for frontend integration)
-CORS_ORIGINS=http://localhost:8080,http://0.0.0.0:8080
-
-# Session Settings
-SESSION_TIMEOUT_HOURS=24
-MAX_SESSIONS=100
-
-# Logging
-LOG_LEVEL=INFO
-```
-
-**Environment File Reference:**
-The `backend_api/env.example` file contains all available configuration options with descriptions. Copy this file to `.env` and customize the values for your deployment.
-
-## 🚀 Deployment Options
-
-### Option 1: Direct Python Deployment
-```bash
-cd backend_api
+# Using Python
 python app.py
+
+# Or using Flask directly
+flask run --host=0.0.0.0 --port=8000
 ```
 
-### Option 2: Production Deployment with Gunicorn
-```bash
-cd backend_api
+The API will start on `http://localhost:8000`
 
-# Install gunicorn
-pip install gunicorn
-
-# Run with gunicorn (production)
-gunicorn -w 4 -b 0.0.0.0:8000 app:app
-
-# Run with gunicorn (development)
-gunicorn -w 1 -b 0.0.0.0:8000 --reload app:app
-```
-
-### Option 3: Using the Start Script
-```bash
-cd backend_api
-python start_api.py
-```
-
-## 🔧 Maintenance
-
-### Cleanup Qdrant Collections
-```bash
-cd backend_api
-python force_cleanup.py --dry-run   # preview
-python force_cleanup.py --force     # delete all collections
-```
+## API Endpoints
 
 ### Health Check
-```bash
-curl http://localhost:8000/api/health
+```
+GET /api/health
 ```
 
-## 🔧 Environment Setup
-
-### Required Environment Variables
-
-Create a `.env` file in the `backend_api` directory with the following variables:
-
-```bash
-# Google Gemini API Configuration
-GOOGLE_API_KEY=your_google_gemini_api_key
-GOOGLE_MODEL_NAME=gemini-2.0-flash
-
-# Qdrant Vector Database Configuration
-QDRANT_URL=https://your-qdrant-url:6333
-QDRANT_API_KEY=your_qdrant_api_key
-
-# API Settings
-API_HOST=0.0.0.0
-API_PORT=8000
-API_DEBUG=True
-
-# CORS Settings (for frontend integration)
-CORS_ORIGINS=http://localhost:8080,http://0.0.0.0:8080
-
-# Session Settings
-SESSION_TIMEOUT_HOURS=24
-MAX_SESSIONS=100
-
-# Logging
-LOG_LEVEL=INFO
+### Upload Flight Data
+```
+POST /api/flight-data
+Headers: X-Session-ID: <session_id>
+Body: JSON flight data from frontend
 ```
 
-### Environment File Reference
-
-The `backend_api/env.example` file contains all available configuration options with descriptions. Copy this file to `.env` and customize the values for your deployment:
-
-```bash
-cp env.example .env
+### Chat
+```
+POST /api/chat
+Headers: X-Session-ID: <session_id>
+Body: {
+  "message": "What was the maximum altitude?",
+  "sessionId": "<session_id>",
+  "timestamp": 1234567890
+}
 ```
 
-**Version**: 2.0.0  
-**Last Updated**: 2024-01-01  
-**Compatibility**: Python 3.8+, Flask 2.3+, Google Gemini API
+### Get Session Summary
+```
+GET /api/session/<session_id>/summary
+```
+
+### Get Telemetry Data
+```
+GET /api/telemetry/<session_id>/<parameter>
+Parameters: GPS, BATTERY, ALTITUDE, ATTITUDE, EVENTS
+```
+
+### Get Anomalies
+```
+GET /api/anomalies/<session_id>
+```
+
+## Architecture
+
+### Agent Flow
+
+The backend uses a simple React-style agent:
+
+```
+1. THINK: Analyze user question, decide what data is needed
+2. ACT: Retrieve telemetry data, detect anomalies, etc.
+3. OBSERVE: Process results
+4. REPEAT: Continue if more information needed (max 3 iterations)
+5. RESPOND: Generate natural language answer using Gemini
+```
+
+### Services
+
+- **SessionManager**: Manages user sessions and flight data
+- **TelemetryService**: Extracts and analyzes flight parameters
+- **GeminiService**: Interfaces with Google Gemini API
+- **QdrantService**: Vector database for documentation (optional)
+- **FlightAnalysisAgent**: LangGraph agent orchestrating analysis
+
+## Example Questions
+
+Users can ask questions like:
+
+- "What was the highest altitude reached during the flight?"
+- "When did the GPS signal first get lost?"
+- "What was the maximum battery temperature?"
+- "Are there any anomalies in this flight?"
+- "Can you spot any issues in the GPS data?"
+- "How long was the total flight time?"
+
+The agent will:
+1. Determine what data is needed
+2. Retrieve relevant telemetry
+3. Detect anomalies if needed
+4. Provide a comprehensive, data-driven answer
+
+## Configuration
+
+Edit `.env` file:
+
+```bash
+# Required
+GOOGLE_API_KEY=your_gemini_api_key
+
+# Optional
+QDRANT_URL=http://localhost:6333
+FLASK_PORT=8000
+MAX_AGENT_ITERATIONS=5
+```
+
+## Development
+
+### Project Structure
+
+```
+backend_api/
+├── app.py                 # Flask application
+├── config.py              # Configuration
+├── models.py              # Data models
+├── session_manager.py     # Session management
+├── telemetry_service.py   # Telemetry extraction
+├── gemini_service.py      # Gemini API integration
+├── qdrant_service.py      # Vector database
+├── agent.py               # LangGraph agent
+└── requirements.txt       # Dependencies
+```
+
+### Adding New Features
+
+**New telemetry parameter:**
+1. Add extraction logic in `telemetry_service.py`
+2. Update `_create_flight_summary()` to detect it
+3. Add action in `agent.py` if needed
+
+**New agent action:**
+1. Add condition in `agent._think_node()`
+2. Implement in `agent._act_node()`
+
+## Troubleshooting
+
+### "GOOGLE_API_KEY is required"
+- Make sure you created a `.env` file with your API key
+
+### "Could not connect to Qdrant"
+- This is a warning, not an error. The backend works without Qdrant.
+- If you want vector search, start Qdrant with Docker
+
+### Agent not providing good answers
+- Increase `MAX_AGENT_ITERATIONS` in `.env`
+- Check that flight data was uploaded successfully
+- Review logs for errors
+
+## License
+
+Same as UAVLogViewer main project
+

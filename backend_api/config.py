@@ -1,55 +1,37 @@
-"""
-Configuration settings for the UAV Log Viewer Backend API
-"""
-
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 class Config:
-    """Base configuration class"""
+    """Application configuration"""
     
-    # API Settings
-    HOST = os.getenv('API_HOST', '0.0.0.0')
-    PORT = int(os.getenv('API_PORT', 8000))
-    DEBUG = os.getenv('API_DEBUG', 'True').lower() == 'true'
+    # Google Gemini
+    GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY', '')
+    GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-1.5-pro')
     
-    # CORS Settings
-    CORS_ORIGINS = os.getenv('CORS_ORIGINS', 'http://localhost:8080').split(',')
+    # Qdrant Cloud (using your existing .env variable names)
+    QDRANT_URL = os.getenv('QDRANT_URL', '')
+    QDRANT_API_KEY = os.getenv('QDRANT_API_KEY', '')
     
-    # Session Settings
-    SESSION_TIMEOUT_HOURS = int(os.getenv('SESSION_TIMEOUT_HOURS', 24))
-    MAX_SESSIONS = int(os.getenv('MAX_SESSIONS', 100))
+    # Flask
+    FLASK_PORT = int(os.getenv('FLASK_PORT', 8000))
+    FLASK_DEBUG = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
     
-    # Logging
-    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
-    LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    # Session
+    SESSION_TIMEOUT = int(os.getenv('SESSION_TIMEOUT', 3600))
     
-    # Data Limits
-    MAX_FLIGHT_DATA_SIZE_MB = int(os.getenv('MAX_FLIGHT_DATA_SIZE_MB', 50))
-    MAX_MESSAGE_LENGTH = int(os.getenv('MAX_MESSAGE_LENGTH', 1000))
+    # Agent
+    MAX_AGENT_ITERATIONS = int(os.getenv('MAX_AGENT_ITERATIONS', 5))
     
-    # Response Settings
-    DEFAULT_RESPONSE_TIMEOUT = int(os.getenv('DEFAULT_RESPONSE_TIMEOUT', 30))
+    # ArduPilot Documentation
+    ARDUPILOT_DOCS_URL = 'https://ardupilot.org/plane/docs/logmessages.html'
+    
+    @classmethod
+    def validate(cls):
+        """Validate required configuration"""
+        if not cls.GOOGLE_API_KEY:
+            raise ValueError("GOOGLE_API_KEY is required")
+        return True
 
-class DevelopmentConfig(Config):
-    """Development configuration"""
-    DEBUG = True
-    LOG_LEVEL = 'DEBUG'
-
-class ProductionConfig(Config):
-    """Production configuration"""
-    DEBUG = False
-    LOG_LEVEL = 'WARNING'
-
-class TestingConfig(Config):
-    """Testing configuration"""
-    DEBUG = True
-    LOG_LEVEL = 'DEBUG'
-    MAX_SESSIONS = 10
-
-# Configuration mapping
-config = {
-    'development': DevelopmentConfig,
-    'production': ProductionConfig,
-    'testing': TestingConfig,
-    'default': DevelopmentConfig
-}

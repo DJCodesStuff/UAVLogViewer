@@ -230,6 +230,8 @@ export default {
                     trajectorySources: this.state.trajectorySources,
                     attitudeSources: this.state.attitudeSources,
                     attitudeSource: this.state.attitudeSource,
+                    // Battery data
+                    batterySeries: this.state.batterySeries,
                     // Mission and events
                     mission: this.state.mission,
                     flightModeChanges: this.state.flightModeChanges,

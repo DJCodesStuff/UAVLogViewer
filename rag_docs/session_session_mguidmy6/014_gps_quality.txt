@@ -1,0 +1,2 @@
+SESSION session_mguidmy6 GPS QUALITY
+{'statuses': [{'timestamp': -9, 'status': 'RTK_FIXED'}], 'latest_status': 'RTK_FIXED', 'accuracy': {'hacc': {'min': 0.0, 'max': 0.0, 'mean': 0.0, 'median': 0.0, 'std_dev': 0.0, 'count': 799}}}

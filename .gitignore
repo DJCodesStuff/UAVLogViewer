@@ -78,3 +78,5 @@ fabric.properties
 *.env
 QUESTIONS.md
 access.txt
+
+test*.py
