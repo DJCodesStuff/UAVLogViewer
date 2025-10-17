@@ -41,7 +41,6 @@ docker run -p 8080:8080 -d ghcr.io/ardupilot/uavlogviewer:latest
 ## Documentation
 
 - Backend deployment and details: backend_api/README.md
-- Telemetry reference: TELEMETRY_DATA_DOCUMENTATION.md
 
 ## License
 
