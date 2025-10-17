@@ -9,6 +9,7 @@ from telemetry_service import TelemetryService
 from gemini_service import GeminiService
 from qdrant_service import QdrantService
 from agent import FlightAnalysisAgent
+from ingestion_agent import DataIngestionAgent
 
 # Configure logging
 logging.basicConfig(
@@ -40,6 +41,13 @@ agent = FlightAnalysisAgent(
     gemini_service=gemini_service,
     telemetry_service=telemetry_service,
     qdrant_service=qdrant_service
+)
+
+# Ingestion agent for structured docs
+ingestion_agent = DataIngestionAgent(
+    gemini_service=gemini_service,
+    qdrant_service=qdrant_service,
+    telemetry_service=telemetry_service
 )
 
 logger.info("UAV Log Viewer Backend API started")
@@ -113,6 +121,12 @@ def upload_flight_data():
                 logger.warning("Skipping Qdrant upsert: missing embeddings or mismatch counts")
         except Exception as e:
             logger.error(f"Error indexing session telemetry to Qdrant: {e}")
+
+        # Also index structured, LLM-friendly docs via ingestion agent
+        try:
+            _ = ingestion_agent.ingest_session(session_id, data)
+        except Exception as e:
+            logger.error(f"Error ingesting structured docs: {e}")
         
         return jsonify({
             'status': 'success',

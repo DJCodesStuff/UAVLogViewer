@@ -5,6 +5,73 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# -------------------- Helper functions for rich metadata --------------------
+def _safe_min_max(timestamps: List[float]) -> Tuple[Optional[float], Optional[float]]:
+    if not timestamps:
+        return None, None
+    return min(timestamps), max(timestamps)
+
+
+def _estimate_sampling_hz(timestamps: List[float]) -> Optional[float]:
+    if not timestamps or len(timestamps) < 3:
+        return None
+    ts = sorted(timestamps)
+    deltas = [ts[i + 1] - ts[i] for i in range(len(ts) - 1) if ts[i + 1] > ts[i]]
+    if not deltas:
+        return None
+    try:
+        m = statistics.median(deltas)
+        if m <= 0:
+            return None
+        return round(1.0 / m, 3)
+    except Exception:
+        return None
+
+
+def _estimate_missing_ratio(timestamps: List[float]) -> Optional[float]:
+    if not timestamps or len(timestamps) < 4:
+        return None
+    ts = sorted(timestamps)
+    deltas = [ts[i + 1] - ts[i] for i in range(len(ts) - 1) if ts[i + 1] > ts[i]]
+    if not deltas:
+        return None
+    try:
+        m = statistics.median(deltas)
+        if m <= 0:
+            return None
+        expected = (ts[-1] - ts[0]) / m
+        if expected <= 0:
+            return None
+        observed = len(ts)
+        miss = max(0.0, (expected - observed) / expected)
+        return round(miss, 3)
+    except Exception:
+        return None
+
+
+def _bbox_lon_lat(points: List[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+    if not points:
+        return None
+    lons = [p.get('longitude') for p in points if isinstance(p, dict) and isinstance(p.get('longitude'), (int, float))]
+    lats = [p.get('latitude') for p in points if isinstance(p, dict) and isinstance(p.get('latitude'), (int, float))]
+    if not lons or not lats:
+        return None
+    return {
+        'min_lon': min(lons), 'max_lon': max(lons),
+        'min_lat': min(lats), 'max_lat': max(lats),
+    }
+
+
+def _time_meta_from_ts(timestamps: List[float]) -> Dict[str, Optional[float]]:
+    start, end = _safe_min_max(timestamps)
+    duration = (end - start) if (start is not None and end is not None) else None
+    return {
+        'start': start,
+        'end': end,
+        'duration_s': round(duration, 3) if isinstance(duration, (int, float)) else None
+    }
+
+
 class TelemetryService:
     """Service for retrieving and analyzing telemetry data"""
     
@@ -84,11 +151,21 @@ class TelemetryService:
             stats = self._calculate_statistics(altitudes)
         else:
             stats = {}
-        
+
+        timestamps = [p['timestamp'] for p in data_points]
+        metadata = {
+            'units': {'longitude': 'deg', 'latitude': 'deg', 'altitude': 'm', 'timestamp': 's'},
+            'time_range': _time_meta_from_ts(timestamps),
+            'sampling_hz': _estimate_sampling_hz(timestamps),
+            'missing_ratio': _estimate_missing_ratio(timestamps),
+            'bbox': _bbox_lon_lat(data_points)
+        }
+
         return {
             'parameter': 'GPS',
             'data': data_points,
             'statistics': stats,
+            'metadata': metadata,
             'count': len(data_points)
         }
     
@@ -96,11 +173,20 @@ class TelemetryService:
         """Extract altitude data"""
         gps_data = self._extract_gps_data(flight_data, time_range)
         altitudes = [(p['timestamp'], p['altitude']) for p in gps_data['data']]
-        
+
+        timestamps = [t for (t, _) in altitudes]
+        metadata = {
+            'units': {'altitude': 'm', 'timestamp': 's'},
+            'time_range': _time_meta_from_ts(timestamps),
+            'sampling_hz': _estimate_sampling_hz(timestamps),
+            'missing_ratio': _estimate_missing_ratio(timestamps)
+        }
+
         return {
             'parameter': 'ALTITUDE',
             'data': altitudes,
             'statistics': gps_data['statistics'],
+            'metadata': metadata,
             'count': len(altitudes)
         }
 
@@ -187,11 +273,20 @@ class TelemetryService:
             stats = self._calculate_statistics(voltages) if voltages else {}
         else:
             stats = {}
-        
+
+        timestamps = [p['timestamp'] for p in data_points if p.get('timestamp') is not None]
+        metadata = {
+            'units': {'voltage': 'V', 'current': 'A', 'remaining': '%', 'temperature': 'C', 'timestamp': 's'},
+            'time_range': _time_meta_from_ts(timestamps),
+            'sampling_hz': _estimate_sampling_hz(timestamps),
+            'missing_ratio': _estimate_missing_ratio(timestamps)
+        }
+
         return {
             'parameter': 'BATTERY',
             'data': data_points,
             'statistics': stats,
+            'metadata': metadata,
             'count': len(data_points)
         }
     
@@ -223,11 +318,20 @@ class TelemetryService:
             stats = self._calculate_statistics(values)
         else:
             stats = {}
-        
+
+        timestamps = [p['timestamp'] for p in data_points]
+        metadata = {
+            'units': {'roll': 'deg', 'pitch': 'deg', 'yaw': 'deg', 'timestamp': 's'},
+            'time_range': _time_meta_from_ts(timestamps),
+            'sampling_hz': _estimate_sampling_hz(timestamps),
+            'missing_ratio': _estimate_missing_ratio(timestamps)
+        }
+
         return {
             'parameter': parameter.upper(),
             'data': data_points,
             'statistics': stats,
+            'metadata': metadata,
             'count': len(data_points)
         }
     
@@ -246,16 +350,17 @@ class TelemetryService:
         return {
             'parameter': 'EVENTS',
             'data': filtered_events,
+            'metadata': {'units': {}, 'time_range': None},
             'count': len(filtered_events)
         }
     
     def _extract_flight_modes(self, flight_data: Dict) -> Dict:
         """Extract flight mode changes"""
         mode_changes = flight_data.get('flightModeChanges', [])
-        
         return {
             'parameter': 'FLIGHT_MODES',
             'data': mode_changes,
+            'metadata': {'units': {}, 'time_range': None},
             'count': len(mode_changes)
         }
     
@@ -588,6 +693,76 @@ class TelemetryService:
             }
         
         return summary
+
+    # -------------------- Session-level metadata builder --------------------
+    def build_session_metadata(self, session_id: str, flight_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Build rich, consistent session-level metadata describing streams."""
+        meta: Dict[str, Any] = {
+            'session_id': session_id,
+            'streams': {},
+            'counts': {},
+            'gps_quality': {},
+        }
+
+        # GPS
+        gps = self._extract_gps_data(flight_data, None)
+        gps_ts = [p.get('timestamp') for p in gps.get('data', []) if isinstance(p, dict)]
+        meta['streams']['gps'] = {
+            'units': {'longitude': 'deg', 'latitude': 'deg', 'altitude': 'm', 'timestamp': 's'},
+            'time_range': _time_meta_from_ts([t for t in gps_ts if isinstance(t, (int, float))]),
+            'sampling_hz': _estimate_sampling_hz([t for t in gps_ts if isinstance(t, (int, float))]),
+            'missing_ratio': _estimate_missing_ratio([t for t in gps_ts if isinstance(t, (int, float))]),
+            'bbox': _bbox_lon_lat(gps.get('data', []))
+        }
+        meta['counts']['gps_points'] = gps.get('count', 0)
+
+        # ALTITUDE
+        alt = self._extract_altitude_data(flight_data, None)
+        alt_ts = [t for (t, _) in alt.get('data', [])]
+        meta['streams']['altitude'] = {
+            'units': {'altitude': 'm', 'timestamp': 's'},
+            'time_range': _time_meta_from_ts(alt_ts),
+            'sampling_hz': _estimate_sampling_hz(alt_ts),
+            'missing_ratio': _estimate_missing_ratio(alt_ts)
+        }
+        meta['counts']['altitude_points'] = alt.get('count', 0)
+
+        # BATTERY
+        bat = self._extract_battery_data(flight_data, None)
+        bat_ts = [p.get('timestamp') for p in bat.get('data', []) if isinstance(p, dict)]
+        meta['streams']['battery'] = {
+            'units': {'voltage': 'V', 'current': 'A', 'remaining': '%', 'temperature': 'C', 'timestamp': 's'},
+            'time_range': _time_meta_from_ts([t for t in bat_ts if isinstance(t, (int, float))]),
+            'sampling_hz': _estimate_sampling_hz([t for t in bat_ts if isinstance(t, (int, float))]),
+            'missing_ratio': _estimate_missing_ratio([t for t in bat_ts if isinstance(t, (int, float))])
+        }
+        meta['counts']['battery_points'] = bat.get('count', 0)
+
+        # ATTITUDE
+        att = self._extract_attitude_data(flight_data, 'ATTITUDE', None)
+        att_ts = [p.get('timestamp') for p in att.get('data', []) if isinstance(p, dict)]
+        meta['streams']['attitude'] = {
+            'units': {'roll': 'deg', 'pitch': 'deg', 'yaw': 'deg', 'timestamp': 's'},
+            'time_range': _time_meta_from_ts([t for t in att_ts if isinstance(t, (int, float))]),
+            'sampling_hz': _estimate_sampling_hz([t for t in att_ts if isinstance(t, (int, float))]),
+            'missing_ratio': _estimate_missing_ratio([t for t in att_ts if isinstance(t, (int, float))])
+        }
+        meta['counts']['attitude_points'] = att.get('count', 0)
+
+        # EVENTS
+        ev = self._extract_events(flight_data, None)
+        meta['streams']['events'] = {'units': {}, 'time_range': None}
+        meta['counts']['events'] = ev.get('count', 0)
+
+        # FLIGHT MODES
+        fm = self._extract_flight_modes(flight_data)
+        meta['streams']['flight_modes'] = {'units': {}, 'time_range': None}
+        meta['counts']['flight_modes'] = fm.get('count', 0)
+
+        # GPS QUALITY
+        meta['gps_quality'] = self._extract_gps_quality(flight_data) or {}
+
+        return meta
     
     def _llm_anomaly_detection(self, flight_summary: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Use LLM to intelligently detect anomalies in flight data"""
@@ -688,8 +863,21 @@ TELEMETRY DATA:
                 anomalies = json.loads(response)
                 if not isinstance(anomalies, list):
                     anomalies = [anomalies]
-                
-                return anomalies
+
+                # Minimal schema validation: ensure dicts with required keys
+                validated = []
+                for a in anomalies:
+                    if isinstance(a, dict) and all(k in a for k in ['type', 'severity', 'description']):
+                        validated.append(a)
+                if not validated:
+                    return [{
+                        'type': 'ANALYSIS_ERROR',
+                        'severity': 'low',
+                        'description': 'Anomaly JSON did not match expected structure',
+                        'confidence': 0.1
+                    }]
+
+                return validated
                 
             except json.JSONDecodeError:
                 # If JSON parsing fails, create a fallback anomaly

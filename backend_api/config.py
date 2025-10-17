@@ -29,10 +29,20 @@ class Config:
     ARDUPILOT_DOCS_URL = 'https://ardupilot.org/plane/docs/logmessages.html'
     
     # Optional web/tool usage (opt-in triggers)
-    WEB_TOOL_ENABLED = os.getenv('WEB_TOOL_ENABLED', 'true').lower() == 'true'
+    WEB_TOOL_ENABLED = os.getenv('WEB_TOOL_ENABLED', 'false').lower() == 'true'
     WEB_TOOL_TRIGGERS = os.getenv('WEB_TOOL_TRIGGERS', 'use web,search web,search docs,from docs,duckduckgo,ddg').split(',')
     WEB_TOOL_MAX_CHARS = int(os.getenv('WEB_TOOL_MAX_CHARS', 8000))
     WEB_SEARCH_SITE_LIMIT = os.getenv('WEB_SEARCH_SITE_LIMIT', 'ardupilot.org')
+
+    # Grounding and hallucination guardrails
+    GROUNDING_REQUIRED = os.getenv('GROUNDING_REQUIRED', 'true').lower() == 'true'
+    RETRIEVAL_MIN_HITS = int(os.getenv('RETRIEVAL_MIN_HITS', 1))
+    # Note: higher score means more similar in Qdrant (COSINE), typical range [0,1]
+    RETRIEVAL_MIN_SCORE = float(os.getenv('RETRIEVAL_MIN_SCORE', 0.5))
+    REQUIRE_CITATIONS = os.getenv('REQUIRE_CITATIONS', 'false').lower() == 'true'
+    DISABLE_SECOND_PASS_ON_RAG = os.getenv('DISABLE_SECOND_PASS_ON_RAG', 'true').lower() == 'true'
+    SANITIZE_OUTPUT = os.getenv('SANITIZE_OUTPUT', 'true').lower() == 'true'
+    REDACT_SESSION_IDS = os.getenv('REDACT_SESSION_IDS', 'true').lower() == 'true'
     
     @classmethod
     def validate(cls):

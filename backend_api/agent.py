@@ -2,6 +2,7 @@ from typing import Dict, Any, List, TypedDict, Annotated
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage
 import logging
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +311,7 @@ The question seems ambiguous or could be interpreted in multiple ways. Ask for c
 
 Generate a helpful clarification question that helps the user be more specific about what they want to know."""
                 
-                clarification = self.gemini.chat(clarification_prompt, system_prompt="You are a helpful flight data analyst. Ask clarifying questions to better understand what the user needs.")
+                clarification = self.gemini.chat(clarification_prompt, system_prompt="You are a helpful, friendly, and interactive flight data analyst. Ask clarifying questions to better understand what the user needs, keeping questions brief and conversational. You do not have to ask a question or mention data unless prompted to.")
                 observation = f"Asked for clarification: {clarification}"
                 state['should_continue'] = False
                 state['answer'] = clarification
@@ -324,16 +325,38 @@ Generate a helpful clarification question that helps the user be more specific a
                         session_collection = f"session_{session_id}"
                         session_hits = self.qdrant.search_in_collection(session_collection, query_vector, top_k=5) or []
                         doc_hits = self.qdrant.search(query_vector, top_k=3) or []
-                        # Build context
+
+                        # Filter by similarity score threshold
+                        min_score = getattr(Config, 'RETRIEVAL_MIN_SCORE', 0.75)
+                        filtered_hits = [h for h in (session_hits + doc_hits) if (h.get('score') or 0) >= min_score]
+
+                        # Grounding requirement: require minimum number of hits
+                        min_hits = getattr(Config, 'RETRIEVAL_MIN_HITS', 2)
+                        if getattr(Config, 'GROUNDING_REQUIRED', True) and len(filtered_hits) < min_hits:
+                            state['answer'] = (
+                                "I don’t have enough grounded context to answer confidently. "
+                                "Please provide more details or upload a flight log with relevant data."
+                            )
+                            observation = (
+                                f"RAG insufficient: {len(filtered_hits)} hits above score {min_score} "
+                                f"(session {len(session_hits)}, docs {len(doc_hits)})."
+                            )
+                            state['should_continue'] = False
+                            state['observation'] = observation
+                            return state
+
+                        # Build context and simple source tags from top filtered hits
                         context_chunks = []
-                        for hit in session_hits + doc_hits:
+                        sources_meta: List[str] = []
+                        top_hits = filtered_hits[:8]
+                        for idx, hit in enumerate(top_hits):
                             payload = hit.get('payload') or {}
                             text = payload.get('text')
                             if text:
                                 context_chunks.append(text)
+                                sources_meta.append(payload.get('type') or 'chunk')
                         # Optional DDG web search (explicitly triggered by user)
                         try:
-                            from config import Config
                             q_lower = state['question'].lower()
                             should_use_web = (
                                 getattr(Config, 'WEB_TOOL_ENABLED', True)
@@ -347,6 +370,11 @@ Generate a helpful clarification question that helps the user be more specific a
                         except Exception as e:
                             logger.error(f"Web tool failed: {e}")
                         rag_context = "\n\n".join(context_chunks[:8])
+                        if getattr(Config, 'REDACT_SESSION_IDS', True):
+                            try:
+                                rag_context = self.gemini.redact_session_ids(rag_context)
+                            except Exception:
+                                pass
                         # Ask model to answer only from context
                         answer = self.gemini.chat(
                             user_message=(
@@ -357,9 +385,39 @@ Generate a helpful clarification question that helps the user be more specific a
                             system_prompt=(
                                 "You are a UAV telemetry and ArduPilot expert. Use only the provided context. "
                                 "When interpreting message names, fields, and semantics, align with the ArduPilot documentation at the given URL. "
-                                "If the context does not contain the required facts, say what additional data is needed."
+                                "If the context does not contain the required facts, say what additional data is needed. "
+                                "Maintain a friendly, interactive tone; ask at most one brief clarifying question only if truly necessary. Do not reveal any session identifiers."
                             )
                         )
+
+                        # Verify the answer is supported by the same context
+                        try:
+                            supported = self.gemini.verify_answer_supported(rag_context, answer)
+                        except Exception as _:
+                            supported = True
+
+                        if not supported and getattr(Config, 'GROUNDING_REQUIRED', True):
+                            state['answer'] = (
+                                "I can’t verify this answer against the retrieved context. "
+                                "Please provide more data or clarify your question."
+                            )
+                            observation = "RAG verification failed"
+                            state['should_continue'] = False
+                            state['observation'] = observation
+                            return state
+
+                        # Optionally append minimal citations
+                        if getattr(Config, 'REQUIRE_CITATIONS', True) and sources_meta:
+                            tags = " ".join([f"[{i+1}]" for i in range(len(sources_meta[:3]))])
+                            mapping = ", ".join([f"[{i+1}] {t}" for i, t in enumerate(sources_meta[:3])])
+                            answer = f"{answer} {tags}\nSources: {mapping}"
+
+                        # Redact session identifiers and sanitize if configured
+                        if getattr(Config, 'REDACT_SESSION_IDS', True):
+                            try:
+                                answer = self.gemini.redact_session_ids(answer)
+                            except Exception:
+                                pass
                         state['answer'] = answer
                         observation = f"RAG used: {len(session_hits)} session hits, {len(doc_hits)} doc hits"
                     else:
@@ -419,6 +477,14 @@ Generate a helpful clarification question that helps the user be more specific a
         anomalies = state.get('anomalies', [])
         observations = state.get('observation', '')
         
+        # If we already produced a grounded RAG answer, optionally bypass second pass
+        if (
+            getattr(Config, 'DISABLE_SECOND_PASS_ON_RAG', True)
+            and state.get('action') == 'rag_answer'
+            and state.get('answer')
+        ):
+            return state
+
         # Get available data summary for context
         available_data = self._get_available_data_summary(session_id)
         
@@ -452,6 +518,18 @@ Generate a helpful clarification question that helps the user be more specific a
             context=context
         )
         
+        # Optionally redact session IDs
+        if getattr(Config, 'REDACT_SESSION_IDS', True):
+            try:
+                answer = self.gemini.redact_session_ids(answer)
+            except Exception:
+                pass
+        # Optionally sanitize output to plain ASCII without special markup
+        if getattr(Config, 'SANITIZE_OUTPUT', True):
+            try:
+                answer = self.gemini.sanitize_plain_ascii(answer)
+            except Exception:
+                pass
         state['answer'] = answer
         return state
     

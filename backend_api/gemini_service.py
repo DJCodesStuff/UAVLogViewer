@@ -3,6 +3,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from typing import List, Dict, Any
 import logging
 import re
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ class GeminiService:
         self.llm = ChatGoogleGenerativeAI(
             model=model,
             google_api_key=api_key,
-            temperature=0.3
+            temperature=0.0
         )
         # Embeddings model for vector search (prefer new model, fallback to legacy)
         self.embedder = None
@@ -89,6 +90,34 @@ class GeminiService:
             logger.error(f"All embedding attempts failed: {last_error}")
         return []
     
+    def verify_answer_supported(self, context: str, answer: str) -> bool:
+        """Verify that the answer is supported by the provided context.
+        Returns True if supported, False if the model flags unsupported claims.
+        """
+        if not answer:
+            return False
+        try:
+            verifier = ChatGoogleGenerativeAI(
+                model=self.llm.model,
+                google_api_key=self.api_key,
+                temperature=0.0
+            )
+            prompt = (
+                "You are a strict fact-checker. Given CONTEXT and ANSWER, "
+                "reply with a single token: OK if every factual claim in ANSWER "
+                "is directly supported by CONTEXT, otherwise UNSUPPORTED.\n\n"
+                f"CONTEXT:\n{context}\n\nANSWER:\n{answer}"
+            )
+            result = verifier.invoke([HumanMessage(content=prompt)])
+            text = (result.content or "").strip().upper()
+            if "UNSUPPORTED" in text:
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"Verifier failed: {e}")
+            # Fail-safe: if verifier errors, do not block the answer
+            return True
+
     def analyze_telemetry(
         self, 
         question: str, 
@@ -251,4 +280,30 @@ Be specific and reference actual data values when available. Keep it brief and f
         except Exception as e:
             logger.error(f"DDG search error: {e}")
             return []
+
+    # -------------------- Output sanitization --------------------
+    def sanitize_plain_ascii(self, text: str) -> str:
+        """Convert to plain ASCII, remove brackets, asterisks, backticks, and compress whitespace."""
+        if not text:
+            return text
+        # Normalize and strip diacritics
+        normalized = unicodedata.normalize('NFKD', text)
+        ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
+        # Remove special markup characters and square brackets
+        cleaned = re.sub(r"[\[\]`*]+", "", ascii_text)
+        # Collapse whitespace
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
+
+    def redact_session_ids(self, text: str) -> str:
+        """Redact session identifiers like 'session_<alnum>' that may appear in context/answers."""
+        if not text:
+            return text
+        try:
+            # Common patterns: session_<id>, SESSION <id>
+            text = re.sub(r"session_[a-zA-Z0-9_-]+", "[session]", text, flags=re.IGNORECASE)
+            text = re.sub(r"SESSION\s+[a-zA-Z0-9_-]+", "SESSION [id]", text)
+        except Exception:
+            return text
+        return text
 
