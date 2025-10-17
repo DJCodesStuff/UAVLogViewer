@@ -19,6 +19,11 @@ npm install
 export VUE_APP_CESIUM_TOKEN=<your-cesium-token>
 npm run dev
 ```
+or
+```bash
+docker build -t uav-log-viewer-frontend .
+docker run -p 8080:8080 -e VUE_APP_CESIUM_TOKEN="<cesium_token>" uav-log-viewer-frontend
+```
 
 2) Backend (deployment & configuration)
 
