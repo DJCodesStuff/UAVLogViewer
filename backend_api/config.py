@@ -28,6 +28,12 @@ class Config:
     # ArduPilot Documentation
     ARDUPILOT_DOCS_URL = 'https://ardupilot.org/plane/docs/logmessages.html'
     
+    # Optional web/tool usage (opt-in triggers)
+    WEB_TOOL_ENABLED = os.getenv('WEB_TOOL_ENABLED', 'true').lower() == 'true'
+    WEB_TOOL_TRIGGERS = os.getenv('WEB_TOOL_TRIGGERS', 'use web,search web,search docs,from docs,duckduckgo,ddg').split(',')
+    WEB_TOOL_MAX_CHARS = int(os.getenv('WEB_TOOL_MAX_CHARS', 8000))
+    WEB_SEARCH_SITE_LIMIT = os.getenv('WEB_SEARCH_SITE_LIMIT', 'ardupilot.org')
+    
     @classmethod
     def validate(cls):
         """Validate required configuration"""

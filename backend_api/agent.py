@@ -331,6 +331,21 @@ Generate a helpful clarification question that helps the user be more specific a
                             text = payload.get('text')
                             if text:
                                 context_chunks.append(text)
+                        # Optional DDG web search (explicitly triggered by user)
+                        try:
+                            from config import Config
+                            q_lower = state['question'].lower()
+                            should_use_web = (
+                                getattr(Config, 'WEB_TOOL_ENABLED', True)
+                                and any(trigger.strip().lower() in q_lower for trigger in getattr(Config, 'WEB_TOOL_TRIGGERS', []))
+                            )
+                            if should_use_web:
+                                site = getattr(Config, 'WEB_SEARCH_SITE_LIMIT', None)
+                                results = self.gemini.ddg_search(state['question'], site=site, k=5)
+                                if results:
+                                    context_chunks.append("DUCKDUCKGO RESULTS:\n" + "\n\n".join(results))
+                        except Exception as e:
+                            logger.error(f"Web tool failed: {e}")
                         rag_context = "\n\n".join(context_chunks[:8])
                         # Ask model to answer only from context
                         answer = self.gemini.chat(

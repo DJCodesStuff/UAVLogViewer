@@ -1,0 +1,5 @@
+SESSION session_mguj28jn SUMMARY
+Vehicle: airplane
+Log Type: tlog
+Duration: None
+Data Availability: {'has_gps': True, 'has_battery': False, 'has_attitude': True, 'has_events': True, 'has_flight_modes': True, 'has_gps_metadata': True}

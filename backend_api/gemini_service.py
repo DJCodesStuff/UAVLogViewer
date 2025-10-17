@@ -2,6 +2,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from typing import List, Dict, Any
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -218,4 +219,36 @@ Be specific and reference actual data values when available. Keep it brief and f
                 truncated_content += '...'
         
         return truncated_content
+
+    # -------------------- Optional DDG web search (opt-in) --------------------
+    def ddg_search(self, query: str, site: str | None = None, k: int = 5) -> list[str]:
+        """Lightweight DuckDuckGo search using public HTML results.
+        Returns a list of result snippets/links as strings. Kept minimal to avoid extra deps.
+        """
+        try:
+            import requests
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
+            }
+            q = query.strip()
+            if site:
+                q = f"site:{site} " + q
+            params = { 'q': q }
+            r = requests.get('https://duckduckgo.com/html/', params=params, headers=headers, timeout=15)
+            r.raise_for_status()
+            html = r.text
+            # crude extraction of links + snippets (avoid full parser to keep dependencies small)
+            # pattern targets result blocks
+            items = []
+            for m in re.finditer(r'<a rel="nofollow" class="result__a" href="(.*?)".*?>(.*?)</a>.*?<a.*?class="result__url".*?>(.*?)</a>', html, re.S):
+                url = m.group(1)
+                title = re.sub('<.*?>', '', m.group(2))
+                disp = re.sub('<.*?>', '', m.group(3))
+                items.append(f"{title}\n{url}\n{disp}")
+                if len(items) >= k:
+                    break
+            return items
+        except Exception as e:
+            logger.error(f"DDG search error: {e}")
+            return []
 
