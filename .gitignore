@@ -82,3 +82,9 @@ access.txt
 test*.py
 
 rag_docs
+# Python / env junk
+__pycache__/
+*.pyc
+.env
+venv/
+.ipynb_checkpoints/
